@@ -85,6 +85,26 @@ def test_does_not_retry_4xx(tmp_path):
     assert calls["n"] == 1  # no retries on a 4xx
 
 
+def test_infer_with_url_passes_url_not_base64():
+    # presigned/http image -> sent as a URL so the GPU fetches it (no base64)
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return _chat_response("[]")
+
+    client = VLLMClient("http://gpu:8000", SPEC, transport=httpx.MockTransport(handler))
+    client.infer("https://spaces.example/presigned/frame_00001.jpg?sig=abc")
+    img = captured["body"]["messages"][0]["content"][1]["image_url"]["url"]
+    assert img == "https://spaces.example/presigned/frame_00001.jpg?sig=abc"
+
+
+def test_image_url_helper(tmp_path):
+    from labeling_t.model_client import _image_url
+    assert _image_url("http://x/y.jpg") == "http://x/y.jpg"
+    assert _image_url(_img(tmp_path)).startswith("data:image/jpeg;base64,")
+
+
 def test_api_key_sets_auth_header(tmp_path):
     seen = {}
 

@@ -5,6 +5,7 @@ category_map / min_score / strict_categories stay run-level args.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -168,3 +169,30 @@ def test_source_is_the_model_name(tmp_path):
     client = FakeClient({p: '[{"bbox_2d":[0,0,5,5],"label":"car"}]'})
     out = prelabel([p], client, tmp_path / "out")
     assert out[0].detections[0].source == "test-model"
+
+
+# --- cloud path (prelabel_cloud over a Storage backend) -----------------------
+
+def test_prelabel_cloud_writes_labels_and_resumes(tmp_path):
+    import json as _json
+
+    from labeling_t.prelabel import prelabel_cloud
+    from labeling_t.storage import LocalStorage
+
+    st = LocalStorage()
+    uris = _imgs(tmp_path, 3)  # frames as local "storage URIs"
+    client = FakeClient(default='[{"bbox_2d":[0,0,50,50],"label":"car"}]', spec=_spec("abs"))
+    out = str(tmp_path / "labels")
+
+    n = prelabel_cloud(uris, client, out, storage=st)
+    assert n == 3
+    files = sorted(Path(out).glob("*.json"))
+    assert len(files) == 3
+    lab = _json.loads(files[0].read_text())
+    assert lab["detections"][0]["category"] == "car"
+    assert lab["image_path"] == uris[0]  # storage URI preserved as the canonical ref
+
+    # second run resumes: all exist -> model not called again
+    client.calls.clear()
+    n2 = prelabel_cloud(uris, client, out, storage=st)
+    assert n2 == 3 and client.calls == []

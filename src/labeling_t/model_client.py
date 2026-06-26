@@ -40,6 +40,15 @@ def _data_uri(image_path: str | Path) -> str:
     return f"data:{media};base64,{b64}"
 
 
+def _image_url(ref: str | Path) -> str:
+    """An http(s) URL (e.g. presigned S3) passes through so the GPU fetches it
+    directly; a local path is base64-inlined."""
+    s = str(ref)
+    if s.startswith(("http://", "https://")):
+        return s
+    return _data_uri(ref)
+
+
 class VLLMClient:
     """httpx client for one model (a ModelSpec) at one endpoint."""
 
@@ -93,7 +102,7 @@ class VLLMClient:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": _data_uri(image_path)}},
+                        {"type": "image_url", "image_url": {"url": _image_url(image_path)}},
                     ],
                 }
             ],

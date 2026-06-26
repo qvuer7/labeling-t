@@ -235,8 +235,17 @@ conveniences (nginx, dockerized LS) that are local, and both are swappable.
 
 ## 10. Roadmap (v1+)
 
-- **S3 image serving** (presigned URLs) — removes all local image dependence.
-- **Hosted Label Studio** target (config only).
+Cloud loop progress:
+- [x] **Storage layer** (`storage.py`) — local + S3/DO Spaces, presigned URLs, ranged dims.
+- [x] **Dataset layout** (`layout.py`) — `datasets/<dataset>/{frames,labels,verified,export}/`.
+- [x] **Video → frames → S3** (`labeling-t frames`) — keyframes to the dataset tree.
+- [x] **Cloud prelabel** (`labeling-t prelabel-cloud`) — presigned frame URL → vLLM (GPU
+      fetches), dims via ranged read, neutral labels written to `datasets/<d>/labels/`.
+- [ ] **Cloud import-ls** — tasks carry presigned S3 URLs; bucket CORS.
+- [ ] **Hosted Label Studio** on a cloud VM (config only; framework takes `--url`).
+
+Beyond the cloud loop:
+- **RunPod auto-provisioning** — done (`labeling-t-runpod`).
 - **SAM2 stage** — boxes from the VLM prompt SAM2 for masks (the two-stage
   `PreLabeler` design is already in place conceptually).
 - **Tracking** (`track_id` via supervision ByteTrack) + video frame extraction.

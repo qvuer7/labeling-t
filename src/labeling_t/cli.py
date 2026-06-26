@@ -115,6 +115,44 @@ def _cmd_frames(a: argparse.Namespace) -> int:
     return 0
 
 
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+
+def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - needs vLLM + S3
+    from .layout import DatasetLayout
+    from .model_client import VLLMClient
+    from .models import get_spec
+    from .prelabel import prelabel_cloud
+    from .storage import open_storage
+
+    try:
+        spec = get_spec(a.model)
+    except KeyError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    layout = DatasetLayout.from_env(a.dataset, base=a.base)
+    frames_prefix, labels_prefix = layout.frames(a.game), layout.labels(a.game)
+    storage = open_storage(frames_prefix)
+    frames = [u for u in storage.list(frames_prefix + "/") if u.lower().endswith(_IMAGE_SUFFIXES)]
+    if not frames:
+        print(f"no frames under {frames_prefix}", file=sys.stderr)
+        return 1
+    cmap = json.loads(Path(a.category_map).read_text()) if a.category_map else None
+    try:
+        client = VLLMClient.from_env(spec, categories=a.categories or None)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    with client:
+        n = prelabel_cloud(
+            frames, client, labels_prefix, storage=storage, category_map=cmap,
+            min_score=a.min_score, strict_categories=a.strict_categories,
+            max_concurrency=a.concurrency,
+        )
+    print(f"labeled {n}/{len(frames)} frames -> {labels_prefix}")
+    return 0
+
+
 def _cmd_to_coco(a: argparse.Namespace) -> int:
     from .adapters.coco import to_coco
 
@@ -154,6 +192,18 @@ def build_parser() -> argparse.ArgumentParser:
     fr.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET, else 'data')")
     fr.add_argument("--stride", type=int, default=1, help="keep every Kth keyframe (default all)")
     fr.set_defaults(func=_cmd_frames)
+
+    pc = sub.add_parser("prelabel-cloud", help="label a dataset's frames in S3 (presigned URL -> vLLM -> labels in S3)")
+    pc.add_argument("--dataset", required=True)
+    pc.add_argument("--game", required=True)
+    pc.add_argument("--model", default="qwen3_vl", help="model spec key")
+    pc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
+    pc.add_argument("--categories", default=None, type=_csv, help="override spec default categories")
+    pc.add_argument("--category-map", default=None, help="JSON file: model label -> category")
+    pc.add_argument("--min-score", type=float, default=0.0)
+    pc.add_argument("--strict-categories", action="store_true")
+    pc.add_argument("--concurrency", type=int, default=8)
+    pc.set_defaults(func=_cmd_prelabel_cloud)
 
     imp = sub.add_parser("import-ls", help="import labels + pre-annotations into Label Studio")
     imp.add_argument("--labels", required=True, help="dir of <frame>.json neutral labels")

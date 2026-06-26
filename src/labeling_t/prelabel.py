@@ -135,20 +135,13 @@ def _box_to_bbox(raw: list[float], w: int, h: int, coord_space: CoordSpace) -> B
     return BBox(x1=cx1, y1=cy1, x2=max(cx1, cx2), y2=max(cy1, cy2))
 
 
-def _label_one(
-    image_path: str,
-    client: SupportsInfer,
-    *,
-    category_map: dict[str, str] | None,
-    min_score: float,
-    strict_categories: bool,
-) -> ImageLabels:
-    # Model-intrinsic behavior comes from the spec the client is bound to.
-    spec = client.spec
-    with Image.open(image_path) as im:
-        w, h = im.size
-    raw = client.infer(image_path)
-    detections: list[Detection] = []
+def _detections(
+    raw: str, w: int, h: int, spec,
+    *, category_map: dict[str, str] | None, min_score: float, strict_categories: bool,
+) -> list[Detection]:
+    """Model text + image dims -> Detections. Shared by the local and cloud
+    paths; only how `raw`/`w`/`h` are obtained differs between them."""
+    out: list[Detection] = []
     for box, label, score in spec.parse(raw):
         category = label if category_map is None else category_map.get(label)
         if category is None:
@@ -157,7 +150,7 @@ def _label_one(
             continue  # drop on purpose
         if score is not None and score < min_score:
             continue
-        detections.append(
+        out.append(
             Detection(
                 bbox=_box_to_bbox(box, w, h, spec.coord_space),
                 category=category,
@@ -165,7 +158,24 @@ def _label_one(
                 source=spec.name,
             )
         )
-    return ImageLabels(image_path=image_path, width=w, height=h, detections=detections)
+    return out
+
+
+def _label_one(
+    image_path: str,
+    client: SupportsInfer,
+    *,
+    category_map: dict[str, str] | None,
+    min_score: float,
+    strict_categories: bool,
+) -> ImageLabels:
+    spec = client.spec
+    with Image.open(image_path) as im:  # local file -> dims from disk
+        w, h = im.size
+    raw = client.infer(image_path)
+    dets = _detections(raw, w, h, spec, category_map=category_map,
+                       min_score=min_score, strict_categories=strict_categories)
+    return ImageLabels(image_path=image_path, width=w, height=h, detections=dets)
 
 
 def prelabel(
@@ -219,3 +229,54 @@ def prelabel(
     with ThreadPoolExecutor(max_workers=max_concurrency) as pool:
         results = list(pool.map(work, image_paths))
     return [r for r in results if r is not None]
+
+
+def prelabel_cloud(
+    frame_uris: list[str],
+    client: SupportsInfer,
+    out_prefix: str,
+    *,
+    storage,
+    category_map: dict[str, str] | None = None,
+    min_score: float = 0.0,
+    strict_categories: bool = False,
+    max_concurrency: int = 8,
+    resume: bool = True,
+) -> int:
+    """Pre-label frames living in object storage, fully in the cloud.
+
+    Per frame: presign the URL (the GPU fetches it — no host download), read
+    dims via a ranged header read, infer, and write a neutral-schema label JSON
+    to `out_prefix/<stem>.json`. The saved `image_path` is the frame's storage
+    URI. Returns the number of labels present (written + skipped-existing);
+    per-frame failures go to `out_prefix/failures.jsonl` and don't stop the run.
+    """
+    spec = client.spec
+    out_prefix = out_prefix.rstrip("/")
+    existing = set(storage.list(out_prefix + "/")) if resume else set()
+    fails: list[str] = []
+    lock = threading.Lock()
+
+    def work(uri: str) -> int:
+        dest = f"{out_prefix}/{Path(uri).stem}.json"
+        if dest in existing:
+            return 1
+        try:
+            w, h = storage.image_size(uri)
+            raw = client.infer(storage.presigned_url(uri))  # presigned -> GPU fetches
+            dets = _detections(raw, w, h, spec, category_map=category_map,
+                               min_score=min_score, strict_categories=strict_categories)
+            labels = ImageLabels(image_path=uri, width=w, height=h, detections=dets)
+        except Exception as exc:  # noqa: BLE001 - resilience is the point
+            with lock:
+                fails.append(json.dumps({"image": uri, "error": f"{type(exc).__name__}: {exc}"}))
+            return 0
+        storage.write_text(dest, labels.model_dump_json())
+        return 1
+
+    with ThreadPoolExecutor(max_workers=max_concurrency) as pool:
+        written = sum(pool.map(work, frame_uris))
+    if fails:
+        storage.write_text(f"{out_prefix}/failures.jsonl", "\n".join(fails) + "\n")
+        print(f"{len(fails)} frames failed -> {out_prefix}/failures.jsonl")
+    return written
