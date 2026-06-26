@@ -69,6 +69,9 @@ Per frame, `prelabel`:
 | `schema.py` | The owned contract: `BBox`, `Detection`, `ImageLabels`. Absolute-pixel `xyxy`. `extra="forbid"` so the schema can't sprawl. v0 is Detection-only; mask/keypoint/track_id extension recipe is documented inline. |
 | `geometry.py` | All coordinate math in one place: normalized↔abs, abs↔percent (Label Studio), abs→COCO `xywh`. The single bug-prone zone, isolated and heavily tested. |
 | `models.py` | `ModelSpec` registry. Each model's intrinsic behavior — served name, prompt, `coord_space`, default categories, parser — lives here, **not** in `.env`. |
+| `storage.py` | `Storage` abstraction: local + S3 (DO Spaces) backends. `presigned_url`, `image_size` (ranged header read), `list`, `read/write`. The cloud source/sink. |
+| `layout.py` | `DatasetLayout` — the single definition of the bucket folder structure (dataset-grouped). Frames/labels/verified/export keys can't drift. |
+| `frames.py` | Video → keyframes (ffmpeg `-skip_frame nokey`) → storage. The `labeling-t frames` command. Idempotent, stride-able. |
 | `gpu.py` | `PodSpec` + GPU preset registry (rtx4090/5090, a40, a100, h100…). Rentable hardware config, separate from model behavior. |
 | `runpod.py` | RunPod provisioning (the `labeling-t-runpod` command): `up`/`down`/`status`/`gpus`. Builds the serving recipe from a `ModelSpec` + `PodSpec`, writes the endpoint to `.env`. |
 | `model_client.py` | `VLLMClient`: httpx transport to a remote vLLM OpenAI-compatible endpoint. Sends image (base64) + prompt; caps `max_tokens`; applies `repetition_penalty`; retries 5xx/network. |
@@ -173,6 +176,24 @@ Solved along the way (baked into scripts/compose):
 - [x] Proven end-to-end on real basketball footage (12 frames, 4 games)
 
 ---
+
+## 7b. Cloud storage layout (codified in `layout.py`)
+
+Dataset-grouped: everything for one labeling effort is self-contained under its
+dataset name, in `ml-cv-data`:
+
+```
+streams/<game>/<game>_NNN.ts                            # RAW video (StreamScout, untouched)
+datasets/<dataset>/
+    frames/<game>/<game>_NNN_KKKKK.jpg                  # keyframes
+    labels/<game>/<game>_NNN_KKKKK.json                 # model pre-labels (neutral schema)
+    verified/<game>/<game>_NNN_KKKKK.json               # human-verified (neutral schema)
+    export/<version>/annotations.coco.json              # exports
+```
+
+A frame, its pre-label, and its verified label share the same filename stem, so
+they join by name across stages — no manifest needed. `NNN` = source chunk,
+`KKKKK` = keyframe index, so any frame traces back to the exact video moment.
 
 ## 8. Local dev vs production (the real gap)
 

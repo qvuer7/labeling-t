@@ -104,6 +104,17 @@ def _cmd_from_ls(a: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_frames(a: argparse.Namespace) -> int:
+    from .frames import frames_from_videos
+    from .layout import DatasetLayout
+
+    game = a.game or a.videos.rstrip("/").split("/")[-1]
+    out = DatasetLayout.from_env(a.dataset, base=a.base).frames(game)
+    n = frames_from_videos(a.videos, out, stride=a.stride)
+    print(f"done: {n} frames -> {out}")
+    return 0
+
+
 def _cmd_to_coco(a: argparse.Namespace) -> int:
     from .adapters.coco import to_coco
 
@@ -128,13 +139,21 @@ def build_parser() -> argparse.ArgumentParser:
     pre = sub.add_parser("prelabel", help="run a registered model over an image folder")
     pre.add_argument("--images", required=True)
     pre.add_argument("--out", required=True)
-    pre.add_argument("--model", default="locate_anything", help="model spec key (labeling_t/models.py)")
+    pre.add_argument("--model", default="qwen3_vl", help="model spec key (labeling_t/models.py)")
     pre.add_argument("--categories", default=None, type=_csv, help="override the spec's default categories")
     pre.add_argument("--category-map", default=None, help="JSON file: model label -> category")
     pre.add_argument("--min-score", type=float, default=0.0)
     pre.add_argument("--strict-categories", action="store_true")
     pre.add_argument("--concurrency", type=int, default=8)
     pre.set_defaults(func=_cmd_prelabel)
+
+    fr = sub.add_parser("frames", help="extract keyframes from videos -> dataset frames (local or S3)")
+    fr.add_argument("--dataset", required=True, help="dataset name (groups frames/labels/verified/export)")
+    fr.add_argument("--videos", required=True, help="source video prefix, e.g. s3://ml-cv-data/streams/<game>/")
+    fr.add_argument("--game", default=None, help="game/group name (default: last segment of --videos)")
+    fr.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET, else 'data')")
+    fr.add_argument("--stride", type=int, default=1, help="keep every Kth keyframe (default all)")
+    fr.set_defaults(func=_cmd_frames)
 
     imp = sub.add_parser("import-ls", help="import labels + pre-annotations into Label Studio")
     imp.add_argument("--labels", required=True, help="dir of <frame>.json neutral labels")

@@ -54,7 +54,8 @@ class LocalStorage:
         p = Path(prefix)
         if p.is_dir():
             return sorted(str(f) for f in p.rglob("*") if f.is_file())
-        return sorted(str(f) for f in Path().glob(prefix))
+        # prefix semantics (like S3): files in the parent whose name starts with it
+        return sorted(str(f) for f in p.parent.glob(p.name + "*") if f.is_file())
 
     def presigned_url(self, uri: str, ttl: int = 3600) -> str:
         return uri
