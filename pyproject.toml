@@ -1,0 +1,41 @@
+[project]
+name = "labeling-t"
+version = "0.1.0"
+description = "Batch auto-labeling backend: model pre-labels -> Label Studio verification -> export. Owned neutral schema; integrations are adapters."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "httpx>=0.27",         # model transport: POST to a remote vLLM OpenAI-compatible endpoint
+    "pillow>=10.0",        # image dimensions + base64 encoding (header read, no GPU)
+    "python-dotenv>=1.0",  # load endpoint/key/model from .env
+]
+
+# The model runs on a REMOTE GPU (vLLM); this machine only talks HTTP. No
+# torch/transformers here. Heavier export deps stay behind an extra.
+[project.optional-dependencies]
+integrations = [
+    "supervision>=0.22",      # export boundary: Detections -> COCO/YOLO, ByteTrack later
+    "label-studio-sdk>=1.0",  # LS import / pull-back
+]
+cloud = [
+    "boto3>=1.34",            # S3 / DigitalOcean Spaces storage backend
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+labeling-t = "labeling_t.cli:main"
+labeling-t-runpod = "labeling_t.runpod:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/labeling_t"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
