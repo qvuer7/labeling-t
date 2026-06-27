@@ -126,6 +126,30 @@ def _cmd_from_ls(a: argparse.Namespace) -> int:
     return 0
 
 
+def _refresh_manifest(dataset: str, base: str | None) -> None:
+    """Best-effort: keep manifest.json current after a stage. Never fatal."""
+    try:
+        from .manifest import build_manifest
+        build_manifest(dataset, base=base)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cmd_manifest(a: argparse.Namespace) -> int:
+    from .manifest import build_manifest, load_manifest
+
+    if a.show:
+        m = load_manifest(a.dataset, base=a.base)
+        if m is None:
+            print("no manifest yet (run without --show to build one)", file=sys.stderr)
+            return 1
+    else:
+        m = build_manifest(a.dataset, base=a.base, categories=a.categories,
+                           source=a.source, stride=a.stride, model=a.model)
+    print(json.dumps(m, indent=2))
+    return 0
+
+
 def _cmd_from_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - needs LS + S3
     import httpx
 
@@ -155,6 +179,7 @@ def _cmd_from_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - need
         storage.write_text(f"{verified_prefix}/{stem}.json", canonical.model_dump_json())
         n += 1
     print(f"pulled {n} verified labels -> {verified_prefix}")
+    _refresh_manifest(a.dataset, a.base)
     return 0
 
 
@@ -174,12 +199,14 @@ def _cmd_frames(a: argparse.Namespace) -> int:
             print(f"[{i}/{len(games)}] {g}", flush=True)
             total += frames_from_videos(f"{root}/{g}/", layout.frames(g), stride=a.stride)
         print(f"done: {total} frames across {len(games)} games -> {layout.frames('')}/")
+        _refresh_manifest(a.dataset, a.base)
         return 0
 
     game = a.game or a.videos.rstrip("/").split("/")[-1]
     out = layout.frames(game)
     n = frames_from_videos(a.videos, out, stride=a.stride)
     print(f"done: {n} frames -> {out}")
+    _refresh_manifest(a.dataset, a.base)
     return 0
 
 
@@ -218,6 +245,7 @@ def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - nee
             max_concurrency=a.concurrency,
         )
     print(f"labeled {n}/{len(frames)} frames -> {labels_prefix}")
+    _refresh_manifest(a.dataset, a.base)
     return 0
 
 
@@ -294,6 +322,16 @@ def build_parser() -> argparse.ArgumentParser:
     fc.add_argument("--project-id", required=True, help="LS project id (from import-ls-cloud output)")
     fc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     fc.set_defaults(func=_cmd_from_ls_cloud)
+
+    mf = sub.add_parser("manifest", help="build/show a dataset's manifest.json (metadata + per-group counts)")
+    mf.add_argument("--dataset", required=True)
+    mf.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
+    mf.add_argument("--show", action="store_true", help="read the stored manifest without rescanning S3")
+    mf.add_argument("--categories", type=_csv, default=None, help="set the dataset's category set")
+    mf.add_argument("--source", default=None, help="raw source prefix, e.g. s3://ml-cv-data/streams/")
+    mf.add_argument("--stride", type=int, default=None, help="record extraction stride")
+    mf.add_argument("--model", default=None, help="record the prelabel model")
+    mf.set_defaults(func=_cmd_manifest)
 
     imp = sub.add_parser("import-ls", help="import labels + pre-annotations into Label Studio")
     imp.add_argument("--labels", required=True, help="dir of <frame>.json neutral labels")
