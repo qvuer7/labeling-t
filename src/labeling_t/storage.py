@@ -34,6 +34,7 @@ class Storage(Protocol):
     def list(self, prefix: str) -> list[str]: ...
     def presigned_url(self, uri: str, ttl: int = 3600) -> str: ...
     def image_size(self, uri: str) -> tuple[int, int]: ...
+    def copy(self, src: str, dst: str) -> None: ...
 
 
 class LocalStorage:
@@ -65,6 +66,12 @@ class LocalStorage:
 
         with Image.open(uri) as im:
             return im.size
+
+    def copy(self, src: str, dst: str) -> None:
+        import shutil
+
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
 
 
 class S3Storage:
@@ -136,6 +143,11 @@ class S3Storage:
             return Image.open(io.BytesIO(data)).size
         except Exception:
             return Image.open(io.BytesIO(self.read_bytes(uri))).size
+
+    def copy(self, src: str, dst: str) -> None:
+        sb, sk = self._split(src)
+        db, dk = self._split(dst)
+        self._s3.copy_object(Bucket=db, Key=dk, CopySource={"Bucket": sb, "Key": sk})
 
 
 def open_storage(uri: str | None = None) -> Storage:
