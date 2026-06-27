@@ -91,6 +91,28 @@ def _cmd_import_ls(a: argparse.Namespace) -> int:  # pragma: no cover - needs LS
     return 0
 
 
+def _cmd_import_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - needs LS + S3
+    from .adapters.label_studio import import_to_label_studio
+    from .layout import DatasetLayout
+    from .schema import ImageLabels
+    from .storage import open_storage
+
+    labels_prefix = DatasetLayout.from_env(a.dataset, base=a.base).labels(a.game)
+    storage = open_storage(labels_prefix)
+    uris = [u for u in storage.list(labels_prefix + "/") if u.endswith(".json")]
+    if not uris:
+        print(f"no labels under {labels_prefix} (run prelabel-cloud first)", file=sys.stderr)
+        return 1
+    images = [ImageLabels.model_validate_json(storage.read_bytes(u).decode()) for u in uris]
+    project = import_to_label_studio(
+        images, base_url=a.url, api_key=a.api_key, project_title=a.project,
+        categories=a.categories,
+        presign=lambda uri: storage.presigned_url(uri, a.ttl),  # frame URI -> presigned URL
+    )
+    print(f"imported {len(images)} tasks into LS project {project.id} ({a.url})")
+    return 0
+
+
 def _cmd_from_ls(a: argparse.Namespace) -> int:
     from .adapters.label_studio import from_label_studio
 
@@ -204,6 +226,17 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--strict-categories", action="store_true")
     pc.add_argument("--concurrency", type=int, default=8)
     pc.set_defaults(func=_cmd_prelabel_cloud)
+
+    ic = sub.add_parser("import-ls-cloud", help="import a dataset's S3 labels into LS (frames via presigned URLs)")
+    ic.add_argument("--dataset", required=True)
+    ic.add_argument("--game", required=True)
+    ic.add_argument("--url", required=True, help="hosted Label Studio base URL")
+    ic.add_argument("--api-key", required=True)
+    ic.add_argument("--project", required=True)
+    ic.add_argument("--categories", required=True, type=_csv)
+    ic.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
+    ic.add_argument("--ttl", type=int, default=604800, help="presigned URL lifetime seconds (default 7d)")
+    ic.set_defaults(func=_cmd_import_ls_cloud)
 
     imp = sub.add_parser("import-ls", help="import labels + pre-annotations into Label Studio")
     imp.add_argument("--labels", required=True, help="dir of <frame>.json neutral labels")

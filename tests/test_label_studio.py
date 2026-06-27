@@ -66,6 +66,16 @@ def test_tasks_carry_dims_and_score():
     assert item["data"]["image"] == "frame.jpg"
 
 
+def test_tasks_use_presigned_url_when_presign_given():
+    img = ImageLabels(
+        image_path="s3://ml-cv-data/datasets/d/frames/g/g_000_00001.jpg",
+        width=100, height=100,
+        detections=[Detection(bbox=BBox(x1=10, y1=20, x2=60, y2=80), category="player")],
+    )
+    tasks = to_label_studio_tasks([img], presign=lambda uri: f"https://signed/{uri.split('/')[-1]}?sig=abc")
+    assert tasks[0]["data"]["image"] == "https://signed/g_000_00001.jpg?sig=abc"
+
+
 def test_image_with_no_detections_yields_empty_result():
     img = ImageLabels(image_path="e.jpg", width=10, height=10, detections=[])
     tasks = to_label_studio_tasks([img])

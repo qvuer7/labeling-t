@@ -21,20 +21,28 @@ Coordinate flow:
 from __future__ import annotations
 
 import os
+from typing import Callable
 from xml.sax.saxutils import quoteattr
 
 from ..geometry import abs_to_percent, percent_to_abs
 from ..schema import BBox, Detection, ImageLabels
 
 
-def _image_ref(image_path: str, image_base_url: str | None, image_root: str | None) -> str:
+def _image_ref(
+    image_path: str,
+    image_base_url: str | None,
+    image_root: str | None,
+    presign: Callable[[str], str] | None = None,
+) -> str:
     """How the labeler's browser fetches the image.
 
-    With image_base_url set, build a URL: base + path relative to image_root
-    (the dir served at that base). e.g. base=http://localhost:8081,
-    root=data, path=data/spike_frames/x.jpg -> http://localhost:8081/spike_frames/x.jpg.
-    Otherwise pass the path/URL through unchanged (already an http/s3 URL).
+    - `presign` set (cloud): image_path is a storage URI; return a presigned URL
+      the browser fetches directly (e.g. a hosted LS loading frames from S3).
+    - `image_base_url` set (local dev): base + path relative to image_root.
+    - neither: pass the path/URL through unchanged.
     """
+    if presign is not None:
+        return presign(image_path)
     if not image_base_url:
         return image_path
     rel = os.path.relpath(image_path, image_root) if image_root else os.path.basename(image_path)
@@ -98,11 +106,12 @@ def to_label_studio_tasks(
     model_version: str = "qwen3-vl",
     image_base_url: str | None = None,
     image_root: str | None = None,
+    presign: Callable[[str], str] | None = None,
 ) -> list[dict]:
     """neutral schema -> LS tasks with predictions (percent coords).
 
-    image_base_url/image_root: when set, image refs become http URLs the
-    browser loads directly (e.g. a static server serving image_root).
+    presign (cloud): a fn turning each frame's storage URI into a URL the
+    browser can fetch (presigned S3). image_base_url/image_root: local dev http.
     """
     tasks = []
     for img in images:
@@ -116,7 +125,7 @@ def to_label_studio_tasks(
             prediction["score"] = sum(scores) / len(scores)
         tasks.append(
             {
-                "data": {image_value: _image_ref(img.image_path, image_base_url, image_root)},
+                "data": {image_value: _image_ref(img.image_path, image_base_url, image_root, presign)},
                 "predictions": [prediction],
             }
         )
@@ -189,6 +198,7 @@ def import_to_label_studio(
     model_version: str = "qwen3-vl",
     image_base_url: str | None = None,
     image_root: str | None = None,
+    presign: Callable[[str], str] | None = None,
 ):  # pragma: no cover - thin I/O wrapper over label-studio-sdk
     """Create an LS project with the generated config and import the tasks +
     pre-annotations. Returns the created project.
@@ -213,6 +223,7 @@ def import_to_label_studio(
         model_version=model_version,
         image_base_url=image_base_url,
         image_root=image_root,
+        presign=presign,
     )
     client.projects.import_tasks(id=project.id, request=tasks)
     return project
