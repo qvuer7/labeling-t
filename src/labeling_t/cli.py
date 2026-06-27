@@ -135,21 +135,6 @@ def _refresh_manifest(dataset: str, base: str | None) -> None:
         pass
 
 
-def _cmd_sample(a: argparse.Namespace) -> int:  # pragma: no cover - needs S3 frames
-    from .sample import curate
-
-    if not a.dry_run and not a.out_dataset:
-        print("--out-dataset required (or use --dry-run to just score)", file=sys.stderr)
-        return 1
-    rep = curate(
-        a.dataset, a.out_dataset or "", a.n, base=a.base,
-        min_brightness=a.min_brightness, min_contrast=a.min_contrast,
-        max_concurrency=a.concurrency, dry_run=a.dry_run,
-    )
-    print(json.dumps(rep, indent=2))
-    return 0
-
-
 def _cmd_manifest(a: argparse.Namespace) -> int:
     from .manifest import build_manifest, load_manifest
 
@@ -347,17 +332,6 @@ def build_parser() -> argparse.ArgumentParser:
     mf.add_argument("--stride", type=int, default=None, help="record extraction stride")
     mf.add_argument("--model", default=None, help="record the prelabel model")
     mf.set_defaults(func=_cmd_manifest)
-
-    sm = sub.add_parser("sample", help="curate frames: drop corrupted/dark/flat, stratified-sample N into a new dataset")
-    sm.add_argument("--dataset", required=True, help="source dataset")
-    sm.add_argument("--out-dataset", default=None, help="new dataset name for the curated subset")
-    sm.add_argument("--n", type=int, default=1000, help="how many frames to keep")
-    sm.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
-    sm.add_argument("--min-brightness", type=float, default=30.0, help="reject frames darker than this (0-255)")
-    sm.add_argument("--min-contrast", type=float, default=18.0, help="reject frames flatter than this (stddev)")
-    sm.add_argument("--concurrency", type=int, default=16)
-    sm.add_argument("--dry-run", action="store_true", help="score + report only, no copy (tune thresholds)")
-    sm.set_defaults(func=_cmd_sample)
 
     imp = sub.add_parser("import-ls", help="import labels + pre-annotations into Label Studio")
     imp.add_argument("--labels", required=True, help="dir of <frame>.json neutral labels")
