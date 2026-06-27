@@ -1,0 +1,70 @@
+#cloud-config
+# One-shot Label Studio host for a DigitalOcean droplet.
+# Use the "Docker" marketplace image (Docker preinstalled) and pass this file as
+# user-data. On first boot it writes the stack, derives an HTTPS hostname from
+# the droplet's own IP (<ip>.nip.io), and starts Label Studio + Caddy.
+# Result: https://<ip-with-dashes>.nip.io  (admin creds + token in /root/LABELSTUDIO.txt)
+
+write_files:
+  - path: /opt/labelstudio/docker-compose.yml
+    content: |
+      services:
+        label-studio:
+          image: heartexlabs/label-studio:latest
+          restart: unless-stopped
+          environment:
+            LABEL_STUDIO_HOST: ${LS_HOST}
+            LABEL_STUDIO_USERNAME: ${LS_USER}
+            LABEL_STUDIO_PASSWORD: ${LS_PASSWORD}
+            LABEL_STUDIO_USER_TOKEN: ${LS_TOKEN}
+            LABEL_STUDIO_LEGACY_API_TOKEN_ENABLED: "true"
+          volumes:
+            - ls-data:/label-studio/data
+          expose:
+            - "8080"
+        caddy:
+          image: caddy:2
+          restart: unless-stopped
+          depends_on: [label-studio]
+          environment:
+            LS_DOMAIN: ${LS_DOMAIN}
+          ports:
+            - "80:80"
+            - "443:443"
+          volumes:
+            - ./Caddyfile:/etc/caddy/Caddyfile:ro
+            - caddy-data:/data
+            - caddy-config:/config
+      volumes:
+        ls-data:
+        caddy-data:
+        caddy-config:
+
+  - path: /opt/labelstudio/Caddyfile
+    content: |
+      {$LS_DOMAIN} {
+      	reverse_proxy label-studio:8080
+      }
+
+runcmd:
+  - |
+    set -e
+    cd /opt/labelstudio
+    IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address)
+    DOMAIN=$(echo "$IP" | tr '.' '-').nip.io
+    PASS=$(openssl rand -hex 12)
+    TOKEN=$(openssl rand -hex 20)
+    {
+      echo "LS_DOMAIN=$DOMAIN"
+      echo "LS_HOST=https://$DOMAIN"
+      echo "LS_USER=admin@labeling-t.local"
+      echo "LS_PASSWORD=$PASS"
+      echo "LS_TOKEN=$TOKEN"
+    } > .env
+    docker compose up -d
+    {
+      echo "Label Studio:  https://$DOMAIN"
+      echo "admin user:    admin@labeling-t.local"
+      echo "admin password: $PASS"
+      echo "API token:     $TOKEN"
+    } > /root/LABELSTUDIO.txt

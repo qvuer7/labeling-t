@@ -1,0 +1,6 @@
+# Caddy auto-HTTPS reverse proxy in front of Label Studio.
+# {$LS_DOMAIN} is the hostname (e.g. 161-35-197-123.nip.io); Caddy obtains a
+# Let's Encrypt cert for it automatically and proxies to the LS container.
+{$LS_DOMAIN} {
+	reverse_proxy label-studio:8080
+}

@@ -1,0 +1,37 @@
+# Production Label Studio stack for a cloud VM (DigitalOcean droplet).
+# LS + Caddy (auto-HTTPS). No image server — frames load from S3 presigned URLs.
+# Values come from a .env file next to this one (cloud-init writes it; see
+# .env.example for manual setup).
+services:
+  label-studio:
+    image: heartexlabs/label-studio:latest
+    restart: unless-stopped
+    environment:
+      LABEL_STUDIO_HOST: ${LS_HOST}                       # public URL, e.g. https://1-2-3-4.nip.io
+      LABEL_STUDIO_USERNAME: ${LS_USER}
+      LABEL_STUDIO_PASSWORD: ${LS_PASSWORD}
+      LABEL_STUDIO_USER_TOKEN: ${LS_TOKEN}
+      LABEL_STUDIO_LEGACY_API_TOKEN_ENABLED: "true"
+    volumes:
+      - ls-data:/label-studio/data                        # persists projects + annotations
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [label-studio]
+    environment:
+      LS_DOMAIN: ${LS_DOMAIN}                              # hostname Caddy gets a cert for
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data                                   # persists TLS certs
+      - caddy-config:/config
+
+volumes:
+  ls-data:
+  caddy-data:
+  caddy-config:
