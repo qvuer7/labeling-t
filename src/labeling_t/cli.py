@@ -126,6 +126,38 @@ def _cmd_from_ls(a: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_from_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - needs LS + S3
+    import httpx
+
+    from .adapters.label_studio import from_label_studio
+    from .layout import DatasetLayout
+    from .storage import open_storage
+
+    layout = DatasetLayout.from_env(a.dataset, base=a.base)
+    frames_prefix, verified_prefix = layout.frames(a.game), layout.verified(a.game)
+    storage = open_storage(verified_prefix)
+
+    # pull verified annotations straight from the LS API (no manual export)
+    r = httpx.get(
+        f"{a.url.rstrip('/')}/api/projects/{a.project_id}/export",
+        params={"exportType": "JSON"},
+        headers={"Authorization": f"Token {a.api_key}"},
+        timeout=180,
+    )
+    r.raise_for_status()
+    labels = from_label_studio(r.json(), result_source="annotations")
+
+    n = 0
+    for img in labels:
+        stem = Path(img.image_path.split("?")[0]).stem  # presigned URL -> frame stem
+        # rewrite image_path to the canonical S3 frame URI so verified joins frames by name
+        canonical = img.model_copy(update={"image_path": f"{frames_prefix}/{stem}.jpg"})
+        storage.write_text(f"{verified_prefix}/{stem}.json", canonical.model_dump_json())
+        n += 1
+    print(f"pulled {n} verified labels -> {verified_prefix}")
+    return 0
+
+
 def _cmd_frames(a: argparse.Namespace) -> int:
     from .frames import VIDEO_EXTS, frames_from_videos
     from .layout import DatasetLayout
@@ -253,6 +285,15 @@ def build_parser() -> argparse.ArgumentParser:
     ic.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     ic.add_argument("--ttl", type=int, default=604800, help="presigned URL lifetime seconds (default 7d)")
     ic.set_defaults(func=_cmd_import_ls_cloud)
+
+    fc = sub.add_parser("from-ls-cloud", help="pull verified annotations from LS API -> S3 verified/")
+    fc.add_argument("--dataset", required=True)
+    fc.add_argument("--game", required=True)
+    fc.add_argument("--url", required=True, help="hosted Label Studio base URL")
+    fc.add_argument("--api-key", required=True)
+    fc.add_argument("--project-id", required=True, help="LS project id (from import-ls-cloud output)")
+    fc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
+    fc.set_defaults(func=_cmd_from_ls_cloud)
 
     imp = sub.add_parser("import-ls", help="import labels + pre-annotations into Label Studio")
     imp.add_argument("--labels", required=True, help="dir of <frame>.json neutral labels")
