@@ -127,11 +127,25 @@ def _cmd_from_ls(a: argparse.Namespace) -> int:
 
 
 def _cmd_frames(a: argparse.Namespace) -> int:
-    from .frames import frames_from_videos
+    from .frames import VIDEO_EXTS, frames_from_videos
     from .layout import DatasetLayout
+    from .storage import open_storage
+
+    layout = DatasetLayout.from_env(a.dataset, base=a.base)
+    if a.all_games:
+        root = a.videos.rstrip("/")
+        storage = open_storage(a.videos)
+        keys = storage.list(root + "/")
+        games = sorted({k[len(root) + 1:].split("/")[0] for k in keys if k.lower().endswith(VIDEO_EXTS)})
+        total = 0
+        for i, g in enumerate(games, 1):
+            print(f"[{i}/{len(games)}] {g}", flush=True)
+            total += frames_from_videos(f"{root}/{g}/", layout.frames(g), stride=a.stride)
+        print(f"done: {total} frames across {len(games)} games -> {layout.frames('')}/")
+        return 0
 
     game = a.game or a.videos.rstrip("/").split("/")[-1]
-    out = DatasetLayout.from_env(a.dataset, base=a.base).frames(game)
+    out = layout.frames(game)
     n = frames_from_videos(a.videos, out, stride=a.stride)
     print(f"done: {n} frames -> {out}")
     return 0
@@ -213,6 +227,8 @@ def build_parser() -> argparse.ArgumentParser:
     fr.add_argument("--game", default=None, help="game/group name (default: last segment of --videos)")
     fr.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET, else 'data')")
     fr.add_argument("--stride", type=int, default=1, help="keep every Kth keyframe (default all)")
+    fr.add_argument("--all-games", action="store_true",
+                    help="treat --videos as the streams root and process every game subfolder")
     fr.set_defaults(func=_cmd_frames)
 
     pc = sub.add_parser("prelabel-cloud", help="label a dataset's frames in S3 (presigned URL -> vLLM -> labels in S3)")
