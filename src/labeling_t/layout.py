@@ -5,10 +5,13 @@ drift apart. Dataset-grouped: everything for one labeling effort is self-
 contained under its dataset name.
 
     <base>/datasets/<dataset>/
-        frames/<game>/<game>_NNN_KKKKK.jpg       # keyframes
-        labels/<game>/<game>_NNN_KKKKK.json      # model pre-labels (neutral schema)
-        verified/<game>/<game>_NNN_KKKKK.json    # human-verified (neutral schema)
+        frames/<group>/<stem>.jpg                # keyframes
+        labels/<group>/<stem>.json               # model pre-labels (neutral schema)
+        verified/<group>/<stem>.json             # human-verified (neutral schema)
         export/<version>/annotations.coco.json   # exports
+
+`group` is a dataset-neutral partition (e.g. a source video / game / clip);
+keep dataset-specific vocabulary out of the framework surface.
 
 `base` is a storage root — an s3:// URI (s3://ml-cv-data) or a local dir (data).
 A frame, its pre-label, and its verified label share the same filename stem, so
@@ -38,14 +41,14 @@ class DatasetLayout:
     def root(self) -> str:
         return f"{self.base}/datasets/{self.dataset}"
 
-    def frames(self, game: str = "") -> str:
-        return f"{self.root}/frames/{game}".rstrip("/")
+    def frames(self, group: str = "") -> str:
+        return f"{self.root}/frames/{group}".rstrip("/")
 
-    def labels(self, game: str = "") -> str:
-        return f"{self.root}/labels/{game}".rstrip("/")
+    def labels(self, group: str = "") -> str:
+        return f"{self.root}/labels/{group}".rstrip("/")
 
-    def verified(self, game: str = "") -> str:
-        return f"{self.root}/verified/{game}".rstrip("/")
+    def verified(self, group: str = "") -> str:
+        return f"{self.root}/verified/{group}".rstrip("/")
 
     def export(self, version: str) -> str:
         return f"{self.root}/export/{version}".rstrip("/")

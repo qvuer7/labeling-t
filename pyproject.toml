@@ -20,6 +20,23 @@ integrations = [
 cloud = [
     "boto3>=1.34",            # S3 / DigitalOcean Spaces storage backend
 ]
+web = [
+    "fastapi>=0.110",         # JSON API over the pipeline stages
+    "uvicorn[standard]>=0.27",# ASGI server for `labeling-t-web`
+    "python-multipart>=0.0.9",# multipart form parsing for image uploads
+]
+# The transformers model-server (`labeling-t-models`). FAT: runs ON the GPU pod,
+# built into the Docker image (uv sync --extra models). NEVER installed on the
+# thin client — base `import labeling_t` stays torch-free (server code is lazy).
+models = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "torch>=2.2",             # transformers backbone (CUDA build via the Docker base image)
+    "transformers>=4.45",     # OWLv2 / GroundingDINO / LocateAnything-3B
+    "pillow>=10.0",
+    "pycocotools>=2.0",       # COCO RLE encode/decode for SAM2 masks (PR-3+)
+    # NOTE: sam2 added at PR-4; pin then (may force its own image — dep solve).
+]
 
 [dependency-groups]
 dev = [
@@ -29,6 +46,8 @@ dev = [
 [project.scripts]
 labeling-t = "labeling_t.cli:main"
 labeling-t-runpod = "labeling_t.runpod:main"
+labeling-t-web = "labeling_t.web.app:main"
+labeling-t-models = "labeling_t.server.app:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -8,6 +8,7 @@ services:
     restart: unless-stopped
     environment:
       LABEL_STUDIO_HOST: ${LS_HOST}                       # public URL, e.g. https://1-2-3-4.nip.io
+      CSRF_TRUSTED_ORIGINS: ${LS_HOST}                     # Django must trust the HTTPS origin behind Caddy (else browser login 403s)
       LABEL_STUDIO_USERNAME: ${LS_USER}
       LABEL_STUDIO_PASSWORD: ${LS_PASSWORD}
       LABEL_STUDIO_USER_TOKEN: ${LS_TOKEN}

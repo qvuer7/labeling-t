@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>labeling-t</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>labeling&#8209;t</h1>
+    <span class="tag">pipeline console</span>
+    <span id="storage-note" class="muted"></span>
+  </header>
+
+  <div class="layout">
+    <nav id="nav">
+      <button data-tab="datasets" class="active">Datasets</button>
+      <button data-tab="upload">1 &middot; Upload</button>
+      <button data-tab="prelabel">2 &middot; Auto&#8209;label</button>
+      <button data-tab="import">3 &middot; Label Studio</button>
+      <button data-tab="verify">4 &middot; Verify</button>
+      <button data-tab="gpu">GPU</button>
+    </nav>
+
+    <main>
+      <!-- Datasets -->
+      <section id="tab-datasets" class="tab active">
+        <div class="row">
+          <h2>Datasets</h2>
+          <button id="refresh-datasets" class="ghost">Refresh</button>
+        </div>
+        <p class="muted">Frames &rarr; labels &rarr; verified, per group (from each dataset's manifest).</p>
+        <div id="datasets"></div>
+      </section>
+
+      <!-- Upload -->
+      <section id="tab-upload" class="tab">
+        <h2>1 &middot; Upload images</h2>
+        <p class="muted">Send a folder of images into a dataset group's <code>frames/</code>.</p>
+        <label>Dataset <input id="up-dataset" placeholder="demo" /></label>
+        <label>Group <input id="up-group" placeholder="all" value="all" /></label>
+        <label class="drop">
+          <input id="up-files" type="file" accept="image/*" multiple />
+          <span>Choose images&hellip;</span>
+        </label>
+        <button id="do-upload" class="primary">Upload</button>
+        <div class="job" id="job-upload"></div>
+      </section>
+
+      <!-- Auto-label -->
+      <section id="tab-prelabel" class="tab">
+        <h2>2 &middot; Auto&#8209;label</h2>
+        <p class="muted">Run the vision model over a group's frames &rarr; <code>labels/</code>. Needs a serving GPU (see GPU tab).</p>
+        <label>Dataset <input id="pl-dataset" placeholder="demo" /></label>
+        <label>Group <input id="pl-group" placeholder="all" value="all" /></label>
+        <label>Model
+          <select id="pl-model"></select>
+        </label>
+        <label>Categories <input id="pl-categories" placeholder="player, ball, referee" /></label>
+        <label>Min score <input id="pl-minscore" type="number" step="0.05" min="0" max="1" value="0" /></label>
+        <button id="do-prelabel" class="primary">Auto&#8209;label</button>
+        <div class="job" id="job-prelabel"></div>
+      </section>
+
+      <!-- Import to Label Studio -->
+      <section id="tab-import" class="tab">
+        <h2>3 &middot; Send to Label Studio</h2>
+        <p class="muted">Create an LS project and import the model's predictions for review.</p>
+        <label>Dataset <input id="im-dataset" placeholder="demo" /></label>
+        <label>Group <input id="im-group" placeholder="all" value="all" /></label>
+        <label>Categories <input id="im-categories" placeholder="player, ball, referee" /></label>
+        <label>Presigned URL TTL (sec) <input id="im-ttl" type="number" value="604800" /></label>
+        <button id="do-import" class="primary">Send to Label Studio</button>
+        <div class="job" id="job-import"></div>
+      </section>
+
+      <!-- Verify -->
+      <section id="tab-verify" class="tab">
+        <h2>4 &middot; Pull verified labels</h2>
+        <p class="muted">Export human-corrected annotations from LS &rarr; <code>verified/</code>.</p>
+        <label>Dataset <input id="ve-dataset" placeholder="demo" /></label>
+        <label>Group <input id="ve-group" placeholder="all" value="all" /></label>
+        <button id="do-verify" class="primary">Pull verified</button>
+        <div class="job" id="job-verify"></div>
+      </section>
+
+      <!-- GPU -->
+      <section id="tab-gpu" class="tab">
+        <div class="row">
+          <h2>GPU (RunPod)</h2>
+          <button id="refresh-gpu" class="ghost">Refresh</button>
+        </div>
+        <div id="gpu-status" class="muted">&hellip;</div>
+        <div id="gpu-pods"></div>
+        <hr />
+        <h3>Start a pod</h3>
+        <label>Model <select id="gpu-model"></select></label>
+        <label>GPU <input id="gpu-type" value="rtx4090" /></label>
+        <label>Auto&#8209;terminate (hours) <input id="gpu-hours" type="number" step="0.5" value="3" /></label>
+        <button id="do-gpu-up" class="primary">Start &amp; serve</button>
+        <div class="job" id="job-gpu"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

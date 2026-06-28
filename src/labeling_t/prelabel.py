@@ -25,9 +25,11 @@ from __future__ import annotations
 import json
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 
 from PIL import Image
 
@@ -35,6 +37,12 @@ from .geometry import normalized_to_abs
 from .schema import BBox, Detection, ImageLabels
 
 CoordSpace = Literal["abs", "norm", "norm1000"]
+
+# Object-store writes occasionally hit a transient connection reset (e.g. DO
+# Spaces); retry a few times before giving up on the frame so one blip doesn't
+# fail it. Anything still failing lands in failures.jsonl and resumes next run.
+_WRITE_RETRIES = 3
+_WRITE_BACKOFF = 1.0  # seconds, linear
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 _BBOX_KEYS = ("bbox_2d", "bbox", "box")
@@ -49,12 +57,43 @@ _OBJ_RE = re.compile(
 )
 
 
+@dataclass
+class RawInference:
+    """One image's raw detections from a backend, before category-map/score-filter.
+
+    `boxes` are (box[4], label, score|None) in the backend's coord space. `width`/
+    `height` are filled when the backend already knows the image dims (a structured
+    server that decodes the image returns them); None when it doesn't (a text VLM
+    returns only text), in which case the orchestrator supplies dims. Carrying dims
+    OUT of the structured backend is what makes the server's box-space the single
+    source of truth for that frame (no separate ranged read that could disagree).
+    """
+
+    boxes: list[tuple[list[float], str, float | None]]
+    width: int | None = None
+    height: int | None = None
+
+
 class SupportsInfer(Protocol):
     # `spec` is a ModelSpec (carries coord_space / parse / name). Duck-typed
     # here to avoid a prelabel <-> models import cycle.
+    #
+    # A backend provides EITHER `infer_raw` (structured: returns RawInference with
+    # boxes already parsed, optionally dims) OR `infer` (text: returns the model's
+    # raw assistant text, which spec.parse turns into boxes). `_raw_inference`
+    # adapts whichever is present, so orchestration is backend-agnostic.
     spec: object
 
     def infer(self, image_path: str | Path) -> str: ...
+
+
+def _raw_inference(client: SupportsInfer, image_path: str | Path) -> RawInference:
+    """Normalize either backend kind to a RawInference. Structured backends
+    (`infer_raw`) win; text backends fall back to parse(infer())."""
+    infer_raw = getattr(client, "infer_raw", None)
+    if infer_raw is not None:
+        return infer_raw(image_path)
+    return RawInference(boxes=client.spec.parse(client.infer(image_path)))
 
 
 # --- T3b: the one model-specific function ------------------------------------
@@ -136,13 +175,14 @@ def _box_to_bbox(raw: list[float], w: int, h: int, coord_space: CoordSpace) -> B
 
 
 def _detections(
-    raw: str, w: int, h: int, spec,
+    boxes: list[tuple[list[float], str, float | None]], w: int, h: int, spec,
     *, category_map: dict[str, str] | None, min_score: float, strict_categories: bool,
 ) -> list[Detection]:
-    """Model text + image dims -> Detections. Shared by the local and cloud
-    paths; only how `raw`/`w`/`h` are obtained differs between them."""
+    """Parsed boxes + image dims -> Detections. Shared by the local and cloud
+    paths and by both backend kinds; only how `boxes`/`w`/`h` are obtained
+    differs (text-backend: spec.parse; structured-backend: server JSON)."""
     out: list[Detection] = []
-    for box, label, score in spec.parse(raw):
+    for box, label, score in boxes:
         category = label if category_map is None else category_map.get(label)
         if category is None:
             if strict_categories:
@@ -170,10 +210,13 @@ def _label_one(
     strict_categories: bool,
 ) -> ImageLabels:
     spec = client.spec
-    with Image.open(image_path) as im:  # local file -> dims from disk
-        w, h = im.size
-    raw = client.infer(image_path)
-    dets = _detections(raw, w, h, spec, category_map=category_map,
+    raw = _raw_inference(client, image_path)
+    if raw.width is not None and raw.height is not None:
+        w, h = raw.width, raw.height          # structured backend knows its box space
+    else:
+        with Image.open(image_path) as im:    # text backend -> dims from disk
+            w, h = im.size
+    dets = _detections(raw.boxes, w, h, spec, category_map=category_map,
                        min_score=min_score, strict_categories=strict_categories)
     return ImageLabels(image_path=image_path, width=w, height=h, detections=dets)
 
@@ -188,6 +231,7 @@ def prelabel(
     strict_categories: bool = False,
     max_concurrency: int = 8,
     resume: bool = True,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[ImageLabels]:
     """Pre-label every image. Writes one `<stem>.json` per frame into out_dir
     (its existence is the done-set, so re-running resumes). Per-frame failures
@@ -195,6 +239,9 @@ def prelabel(
 
     Returns the labels produced THIS run (skipped-by-resume frames are reloaded
     from disk so the return is always the full set).
+
+    `on_progress(done, total)` fires as each frame finishes (a UI/progress hook);
+    default None keeps the silent behavior.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -226,8 +273,14 @@ def prelabel(
         dest.write_text(labels.model_dump_json())
         return labels
 
+    results: list[ImageLabels | None] = []
+    done = 0
     with ThreadPoolExecutor(max_workers=max_concurrency) as pool:
-        results = list(pool.map(work, image_paths))
+        for fut in as_completed(pool.submit(work, p) for p in image_paths):
+            results.append(fut.result())
+            done += 1
+            if on_progress is not None:
+                on_progress(done, len(image_paths))
     return [r for r in results if r is not None]
 
 
@@ -242,6 +295,7 @@ def prelabel_cloud(
     strict_categories: bool = False,
     max_concurrency: int = 8,
     resume: bool = True,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> int:
     """Pre-label frames living in object storage, fully in the cloud.
 
@@ -250,6 +304,9 @@ def prelabel_cloud(
     to `out_prefix/<stem>.json`. The saved `image_path` is the frame's storage
     URI. Returns the number of labels present (written + skipped-existing);
     per-frame failures go to `out_prefix/failures.jsonl` and don't stop the run.
+
+    `on_progress(done, total)` fires as each frame finishes (a UI/progress hook);
+    default None keeps the silent behavior.
     """
     spec = client.spec
     out_prefix = out_prefix.rstrip("/")
@@ -262,20 +319,39 @@ def prelabel_cloud(
         if dest in existing:
             return 1
         try:
-            w, h = storage.image_size(uri)
-            raw = client.infer(storage.presigned_url(uri))  # presigned -> GPU fetches
-            dets = _detections(raw, w, h, spec, category_map=category_map,
+            raw = _raw_inference(client, storage.presigned_url(uri))  # presigned -> GPU/server fetches
+            if raw.width is not None and raw.height is not None:
+                w, h = raw.width, raw.height          # structured server returns dims; skip the ranged read
+            else:
+                w, h = storage.image_size(uri)        # text backend: dims via ranged header read
+            dets = _detections(raw.boxes, w, h, spec, category_map=category_map,
                                min_score=min_score, strict_categories=strict_categories)
             labels = ImageLabels(image_path=uri, width=w, height=h, detections=dets)
+            # the write is inside the resilience boundary: a transient object-store
+            # drop must fail this one frame, not crash the whole batch. Retry the
+            # write (cheap) since these are usually momentary connection resets.
+            payload = labels.model_dump_json()
+            for attempt in range(_WRITE_RETRIES):
+                try:
+                    storage.write_text(dest, payload)
+                    break
+                except Exception:  # noqa: BLE001
+                    if attempt == _WRITE_RETRIES - 1:
+                        raise
+                    time.sleep(_WRITE_BACKOFF * (attempt + 1))
         except Exception as exc:  # noqa: BLE001 - resilience is the point
             with lock:
                 fails.append(json.dumps({"image": uri, "error": f"{type(exc).__name__}: {exc}"}))
             return 0
-        storage.write_text(dest, labels.model_dump_json())
         return 1
 
+    written = done = 0
     with ThreadPoolExecutor(max_workers=max_concurrency) as pool:
-        written = sum(pool.map(work, frame_uris))
+        for fut in as_completed(pool.submit(work, u) for u in frame_uris):
+            written += fut.result()
+            done += 1
+            if on_progress is not None:
+                on_progress(done, len(frame_uris))
     if fails:
         storage.write_text(f"{out_prefix}/failures.jsonl", "\n".join(fails) + "\n")
         print(f"{len(fails)} frames failed -> {out_prefix}/failures.jsonl")

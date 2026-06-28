@@ -14,6 +14,7 @@ write_files:
           restart: unless-stopped
           environment:
             LABEL_STUDIO_HOST: ${LS_HOST}
+            CSRF_TRUSTED_ORIGINS: ${LS_HOST}
             LABEL_STUDIO_USERNAME: ${LS_USER}
             LABEL_STUDIO_PASSWORD: ${LS_PASSWORD}
             LABEL_STUDIO_USER_TOKEN: ${LS_TOKEN}

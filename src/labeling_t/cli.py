@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -27,6 +28,12 @@ _IMAGE_GLOBS = ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.bmp")
 
 def _csv(s: str) -> list[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
+
+
+def _env_arg(var: str) -> dict:
+    """argparse kwargs so a flag defaults to an env var (read after load_env);
+    required only when the env var is absent. Keeps URLs/keys out of commands."""
+    return {"default": os.environ.get(var), "required": var not in os.environ}
 
 
 def _find_images(directory: str) -> list[str]:
@@ -97,7 +104,7 @@ def _cmd_import_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - ne
     from .schema import ImageLabels
     from .storage import open_storage
 
-    labels_prefix = DatasetLayout.from_env(a.dataset, base=a.base).labels(a.game)
+    labels_prefix = DatasetLayout.from_env(a.dataset, base=a.base).labels(a.group)
     storage = open_storage(labels_prefix)
     uris = [u for u in storage.list(labels_prefix + "/") if u.endswith(".json")]
     if not uris:
@@ -151,33 +158,14 @@ def _cmd_manifest(a: argparse.Namespace) -> int:
 
 
 def _cmd_from_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - needs LS + S3
-    import httpx
-
-    from .adapters.label_studio import from_label_studio
     from .layout import DatasetLayout
-    from .storage import open_storage
+    from .verify import pull_verified
 
-    layout = DatasetLayout.from_env(a.dataset, base=a.base)
-    frames_prefix, verified_prefix = layout.frames(a.game), layout.verified(a.game)
-    storage = open_storage(verified_prefix)
-
-    # pull verified annotations straight from the LS API (no manual export)
-    r = httpx.get(
-        f"{a.url.rstrip('/')}/api/projects/{a.project_id}/export",
-        params={"exportType": "JSON"},
-        headers={"Authorization": f"Token {a.api_key}"},
-        timeout=180,
+    n = pull_verified(
+        a.dataset, a.group, url=a.url, api_key=a.api_key,
+        project_id=a.project_id, base=a.base,
     )
-    r.raise_for_status()
-    labels = from_label_studio(r.json(), result_source="annotations")
-
-    n = 0
-    for img in labels:
-        stem = Path(img.image_path.split("?")[0]).stem  # presigned URL -> frame stem
-        # rewrite image_path to the canonical S3 frame URI so verified joins frames by name
-        canonical = img.model_copy(update={"image_path": f"{frames_prefix}/{stem}.jpg"})
-        storage.write_text(f"{verified_prefix}/{stem}.json", canonical.model_dump_json())
-        n += 1
+    verified_prefix = DatasetLayout.from_env(a.dataset, base=a.base).verified(a.group)
     print(f"pulled {n} verified labels -> {verified_prefix}")
     _refresh_manifest(a.dataset, a.base)
     return 0
@@ -189,21 +177,21 @@ def _cmd_frames(a: argparse.Namespace) -> int:
     from .storage import open_storage
 
     layout = DatasetLayout.from_env(a.dataset, base=a.base)
-    if a.all_games:
+    if a.all_groups:
         root = a.videos.rstrip("/")
         storage = open_storage(a.videos)
         keys = storage.list(root + "/")
-        games = sorted({k[len(root) + 1:].split("/")[0] for k in keys if k.lower().endswith(VIDEO_EXTS)})
+        groups = sorted({k[len(root) + 1:].split("/")[0] for k in keys if k.lower().endswith(VIDEO_EXTS)})
         total = 0
-        for i, g in enumerate(games, 1):
-            print(f"[{i}/{len(games)}] {g}", flush=True)
+        for i, g in enumerate(groups, 1):
+            print(f"[{i}/{len(groups)}] {g}", flush=True)
             total += frames_from_videos(f"{root}/{g}/", layout.frames(g), stride=a.stride)
-        print(f"done: {total} frames across {len(games)} games -> {layout.frames('')}/")
+        print(f"done: {total} frames across {len(groups)} groups -> {layout.frames('')}/")
         _refresh_manifest(a.dataset, a.base)
         return 0
 
-    game = a.game or a.videos.rstrip("/").split("/")[-1]
-    out = layout.frames(game)
+    group = a.group or a.videos.rstrip("/").split("/")[-1]
+    out = layout.frames(group)
     n = frames_from_videos(a.videos, out, stride=a.stride)
     print(f"done: {n} frames -> {out}")
     _refresh_manifest(a.dataset, a.base)
@@ -211,6 +199,28 @@ def _cmd_frames(a: argparse.Namespace) -> int:
 
 
 _IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+
+def _cmd_ingest_images(a: argparse.Namespace) -> int:
+    from .ingest import ingest_images
+    from .layout import DatasetLayout
+    from .storage import open_storage
+
+    dest = DatasetLayout.from_env(a.dataset, base=a.base).frames(a.group)
+    storage = open_storage(dest)
+    try:
+        uploaded, total = ingest_images(a.src, dest, storage=storage, max_concurrency=a.concurrency)
+    except (NotADirectoryError, FileNotFoundError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    if total == 0:
+        print(f"no images found in {a.src}", file=sys.stderr)
+        return 1
+    skipped = total - uploaded
+    note = f" ({skipped} already present)" if skipped else ""
+    print(f"uploaded {uploaded}/{total} images -> {dest}{note}")
+    _refresh_manifest(a.dataset, a.base)
+    return 0
 
 
 def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - needs vLLM + S3
@@ -226,7 +236,7 @@ def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - nee
         print(exc, file=sys.stderr)
         return 1
     layout = DatasetLayout.from_env(a.dataset, base=a.base)
-    frames_prefix, labels_prefix = layout.frames(a.game), layout.labels(a.game)
+    frames_prefix, labels_prefix = layout.frames(a.group), layout.labels(a.group)
     storage = open_storage(frames_prefix)
     frames = [u for u in storage.list(frames_prefix + "/") if u.lower().endswith(_IMAGE_SUFFIXES)]
     if not frames:
@@ -284,16 +294,24 @@ def build_parser() -> argparse.ArgumentParser:
     fr = sub.add_parser("frames", help="extract keyframes from videos -> dataset frames (local or S3)")
     fr.add_argument("--dataset", required=True, help="dataset name (groups frames/labels/verified/export)")
     fr.add_argument("--videos", required=True, help="source video prefix, e.g. s3://ml-cv-data/streams/<game>/")
-    fr.add_argument("--game", default=None, help="game/group name (default: last segment of --videos)")
+    fr.add_argument("--group", default=None, help="group/partition name (default: last segment of --videos)")
     fr.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET, else 'data')")
     fr.add_argument("--stride", type=int, default=1, help="keep every Kth keyframe (default all)")
-    fr.add_argument("--all-games", action="store_true",
-                    help="treat --videos as the streams root and process every game subfolder")
+    fr.add_argument("--all-groups", action="store_true",
+                    help="treat --videos as the source root and process every subfolder as a group")
     fr.set_defaults(func=_cmd_frames)
+
+    ig = sub.add_parser("ingest-images", help="upload a local image folder into a dataset group's frames (storage)")
+    ig.add_argument("--src", required=True, help="local directory of images")
+    ig.add_argument("--dataset", required=True)
+    ig.add_argument("--group", required=True, help="group/partition name, e.g. all")
+    ig.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET, else 'data')")
+    ig.add_argument("--concurrency", type=int, default=8)
+    ig.set_defaults(func=_cmd_ingest_images)
 
     pc = sub.add_parser("prelabel-cloud", help="label a dataset's frames in S3 (presigned URL -> vLLM -> labels in S3)")
     pc.add_argument("--dataset", required=True)
-    pc.add_argument("--game", required=True)
+    pc.add_argument("--group", required=True)
     pc.add_argument("--model", default="qwen3_vl", help="model spec key")
     pc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     pc.add_argument("--categories", default=None, type=_csv, help="override spec default categories")
@@ -305,9 +323,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     ic = sub.add_parser("import-ls-cloud", help="import a dataset's S3 labels into LS (frames via presigned URLs)")
     ic.add_argument("--dataset", required=True)
-    ic.add_argument("--game", required=True)
-    ic.add_argument("--url", required=True, help="hosted Label Studio base URL")
-    ic.add_argument("--api-key", required=True)
+    ic.add_argument("--group", required=True)
+    ic.add_argument("--url", help="hosted Label Studio base URL (default $LS_URL)", **_env_arg("LS_URL"))
+    ic.add_argument("--api-key", help="LS API token (default $LS_API_KEY)", **_env_arg("LS_API_KEY"))
     ic.add_argument("--project", required=True)
     ic.add_argument("--categories", required=True, type=_csv)
     ic.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
@@ -316,9 +334,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     fc = sub.add_parser("from-ls-cloud", help="pull verified annotations from LS API -> S3 verified/")
     fc.add_argument("--dataset", required=True)
-    fc.add_argument("--game", required=True)
-    fc.add_argument("--url", required=True, help="hosted Label Studio base URL")
-    fc.add_argument("--api-key", required=True)
+    fc.add_argument("--group", required=True)
+    fc.add_argument("--url", help="hosted Label Studio base URL (default $LS_URL)", **_env_arg("LS_URL"))
+    fc.add_argument("--api-key", help="LS API token (default $LS_API_KEY)", **_env_arg("LS_API_KEY"))
     fc.add_argument("--project-id", required=True, help="LS project id (from import-ls-cloud output)")
     fc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     fc.set_defaults(func=_cmd_from_ls_cloud)
@@ -335,8 +353,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     imp = sub.add_parser("import-ls", help="import labels + pre-annotations into Label Studio")
     imp.add_argument("--labels", required=True, help="dir of <frame>.json neutral labels")
-    imp.add_argument("--url", default="http://localhost:8080")
-    imp.add_argument("--api-key", required=True)
+    imp.add_argument("--url", default=os.environ.get("LS_URL", "http://localhost:8080"),
+                     help="LS base URL (default $LS_URL or http://localhost:8080)")
+    imp.add_argument("--api-key", help="LS API token (default $LS_API_KEY)", **_env_arg("LS_API_KEY"))
     imp.add_argument("--project", required=True)
     imp.add_argument("--categories", required=True, type=_csv)
     imp.add_argument("--image-base-url", default=None,

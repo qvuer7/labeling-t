@@ -4,10 +4,15 @@ Part of the framework (not a loose script): the serving recipe lives with the
 code so spinning a model up is one command, and the logic is importable/testable.
 
 CLI (installed as `labeling-t-runpod`):
-    labeling-t-runpod up       # rent GPU, serve, write endpoint -> .env
-    labeling-t-runpod status   # balance + running pods
-    labeling-t-runpod down     # delete this project's pods (stop billing)
-    labeling-t-runpod gpus     # list GPU presets
+    labeling-t-runpod up           # rent GPU, serve, write endpoint -> .env
+    labeling-t-runpod status       # balance + running pods (shows pod ids)
+    labeling-t-runpod down         # delete this project's pod (stop billing)
+    labeling-t-runpod down <id>    # delete a specific pod (when several run)
+    labeling-t-runpod down --all   # delete every labeling-t-* pod
+    labeling-t-runpod gpus         # list GPU presets
+
+With multiple instances up, `down` (no args) refuses to guess and lists the
+running pods; target one by id or use --all.
 
 Hardware comes from a PodSpec (gpu.py), the model from a ModelSpec (models.py).
 
@@ -26,6 +31,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -34,6 +40,10 @@ from .gpu import DEFAULT_GPU, GPUS, get_pod
 from .models import ModelSpec, get_spec
 
 IMAGE = "vllm/vllm-openai:latest"   # GPU/disk/cloud/CUDA come from the PodSpec
+# Our transformers model-server image. PUBLIC GHCR on purpose -> RunPod needs no
+# registry credentials to pull it (keeps PR-1 launch simple). Push it first:
+#   docker build -t $MODELS_IMAGE . && docker push $MODELS_IMAGE
+MODELS_IMAGE = "ghcr.io/qvuer7/labeling-t-models:latest"
 NAME_PREFIX = "labeling-t"
 
 
@@ -72,6 +82,21 @@ def _docker_args(spec: ModelSpec) -> str:
     ).strip()
 
 
+def _serving(spec: ModelSpec) -> dict:
+    """Per-backend serving recipe: image, docker-args, extra pod env, and the
+    HTTP path that signals 'ready'. vLLM = its official image + /v1/models; our
+    transformers server = the GHCR image + /health, with MODEL/HF_* via env."""
+    if spec.backend == "transformers":
+        env_pairs = [f"MODEL={spec.key}"]
+        if spec.hf_model:
+            env_pairs.append(f"HF_MODEL={spec.hf_model}")
+        token = os.environ.get("HF_TOKEN", "").strip()
+        if token:  # gated weights (e.g. LocateAnything-3B) need an HF token in the pod
+            env_pairs.append(f"HF_TOKEN={token}")
+        return {"image": MODELS_IMAGE, "docker_args": "", "env": env_pairs, "health": "/health"}
+    return {"image": IMAGE, "docker_args": _docker_args(spec), "env": [], "health": "/v1/models"}
+
+
 def _proxy(pod_id: str) -> str:
     return f"https://{pod_id}-8000.proxy.runpod.net"
 
@@ -89,71 +114,167 @@ def _write_env_endpoint(prefix: str, url: str, env_path: str | Path = ".env") ->
     path.write_text("\n".join(lines) + "\n")
 
 
-def cmd_up(a, env) -> int:
-    spec = get_spec(a.model)
-    hw = get_pod(a.gpu)
-    disk = a.disk or hw.disk_gb
-    cloud = a.cloud or hw.cloud
-    min_cuda = a.min_cuda or hw.min_cuda
-    term = (datetime.now(timezone.utc) + timedelta(hours=a.hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+class AmbiguousPods(Exception):
+    """More than one project pod is running and no target was given — refuse to
+    guess which to delete. Carries the candidate pods so callers can list them."""
+
+    def __init__(self, pods: list[dict]):
+        self.pods = pods
+        super().__init__(f"{len(pods)} {NAME_PREFIX} pods running; specify id(s) or all")
+
+
+def start_pod(
+    model: str = "qwen3_vl",
+    *,
+    gpu: str = DEFAULT_GPU,
+    hours: float = 3.0,
+    disk: int = 0,
+    cloud: str | None = None,
+    min_cuda: str | None = None,
+    timeout: int = 900,
+    wait: bool = True,
+    env: dict | None = None,
+    log: Callable[[str], None] = print,
+) -> dict:
+    """Rent a GPU, serve `model` on vLLM, write its endpoint to .env. Returns a
+    dict {id, endpoint, cost_per_hr, terminate_after, ready, served}. `log` is a
+    progress sink (print for the CLI, a Job's log for the web UI). With wait=True
+    it polls /v1/models until the model serves or `timeout` seconds elapse."""
+    env = env or _env()
+    spec = get_spec(model)
+    hw = get_pod(gpu)
+    disk = disk or hw.disk_gb
+    cloud = cloud or hw.cloud
+    min_cuda = min_cuda or hw.min_cuda
+    term = (datetime.now(timezone.utc) + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
     name = f"{NAME_PREFIX}-{spec.key.replace('_', '-')}"
-    print(f"renting {hw.gpu_id} ({hw.vram_gb or '?'}GB, {cloud}) for {spec.name}")
-    out = _runpodctl([
+    serving = _serving(spec)
+    log(f"renting {hw.gpu_id} ({hw.vram_gb or '?'}GB, {cloud}) for {spec.name} [{spec.backend}]")
+    cmd = [
         "pod", "create", "--name", name,
         "--gpu-id", hw.gpu_id, "--gpu-count", str(hw.gpu_count),
-        "--image", IMAGE, "--container-disk-in-gb", str(disk),
+        "--image", serving["image"], "--container-disk-in-gb", str(disk),
         "--ports", "8000/http", "--cloud-type", cloud,
         "--min-cuda-version", min_cuda,
         "--terminate-after", term,
-        "--docker-args", _docker_args(spec),
-        "-o", "json",
-    ], env)
+    ]
+    if serving["docker_args"]:
+        cmd += ["--docker-args", serving["docker_args"]]
+    for kv in serving["env"]:        # transformers backend: MODEL / HF_MODEL / HF_TOKEN
+        cmd += ["--env", kv]
+    cmd += ["-o", "json"]
+    out = _runpodctl(cmd, env)
     pod = json.loads(out)
     pid = pod["id"]
     url = _proxy(pid)
-    print(f"created pod {pid}  (${pod.get('costPerHr')}/hr, auto-terminate {term})")
+    log(f"created pod {pid}  (${pod.get('costPerHr')}/hr, auto-terminate {term})")
     _write_env_endpoint(spec.env_prefix, url)
-    print(f"endpoint -> {url}  (wrote {spec.env_prefix}_ENDPOINT to .env)")
-
-    if a.no_wait:
-        print(f"not waiting (--no-wait). Check: labeling-t-runpod ... or spike --model {spec.key} --check")
-        return 0
-    print(f"waiting for vLLM to serve (download + load, up to {a.timeout // 60} min)...")
-    deadline = time.time() + a.timeout
+    log(f"endpoint -> {url}  (wrote {spec.env_prefix}_ENDPOINT to .env)")
+    info = {"id": pid, "endpoint": url, "cost_per_hr": pod.get("costPerHr"),
+            "terminate_after": term, "model": spec.key, "ready": False, "served": []}
+    if not wait:
+        return info
+    health = serving["health"]
+    log(f"waiting for the model to be ready (download + load, up to {timeout // 60} min)...")
+    deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            r = httpx.get(f"{url}/v1/models", timeout=10)
+            r = httpx.get(f"{url}{health}", timeout=10)
             if r.status_code == 200:
-                print(f"READY — serving {[m['id'] for m in r.json().get('data', [])]}")
-                return 0
+                if health == "/v1/models":  # vLLM: served list == ready
+                    info["served"] = [m["id"] for m in r.json().get("data", [])]
+                    info["ready"] = True
+                elif r.json().get("ready"):  # our /health: ready only after weights load
+                    info["served"] = [r.json().get("model")]
+                    info["ready"] = True
+                if info["ready"]:
+                    log(f"READY — serving {info['served']}")
+                    return info
         except httpx.HTTPError:
             pass
         time.sleep(15)
-    print("timed out waiting. Pod is up — check RunPod GUI logs for progress/errors.", file=sys.stderr)
-    return 1
+    log("timed out waiting. Pod is up — check RunPod GUI logs for progress/errors.")
+    return info
+
+
+def stop_pods(env: dict | None = None, *, pods: list[str] | None = None, all: bool = False) -> list[dict]:
+    """Delete pods (stop billing). With explicit `pods` ids, deletes exactly
+    those; with all=True, every project pod; otherwise the single project pod.
+    Raises AmbiguousPods when several project pods run and no target was given,
+    ValueError for unknown ids. Returns the deleted pods [{id, name}]."""
+    env = env or _env()
+    running = _pods(env)
+    ours = [p for p in running if str(p.get("name", "")).startswith(NAME_PREFIX)]
+    if pods:  # explicit id(s) -> delete exactly those (any pod, ours or not)
+        want = set(pods)
+        targets = [p for p in running if p["id"] in want]
+        missing = want - {p["id"] for p in targets}
+        if missing:
+            raise ValueError(f"no such pod(s): {', '.join(sorted(missing))}")
+    elif all:  # every pod of THIS project (stop all our billing), not unrelated pods
+        targets = ours
+    elif len(ours) > 1:  # ambiguous: don't nuke a sibling instance by accident
+        raise AmbiguousPods(ours)
+    else:  # zero or one of ours -> the common single-instance case
+        targets = ours
+    for p in targets:
+        _runpodctl(["pod", "delete", p["id"]], env)
+    return [{"id": p["id"], "name": p.get("name")} for p in targets]
+
+
+def list_pods_with_balance(env: dict | None = None) -> dict:
+    """Account balance + running pods as structured data. Returns
+    {balance, spend_per_hr, pods: [{id, name, cost_per_hr, status}]}."""
+    env = env or _env()
+    bal = json.loads(_runpodctl(["user", "-o", "json"], env))
+    return {
+        "balance": bal.get("clientBalance", 0),
+        "spend_per_hr": bal.get("currentSpendPerHr", 0),
+        "pods": [
+            {"id": p["id"], "name": p.get("name"),
+             "cost_per_hr": p.get("costPerHr"), "status": p.get("desiredStatus")}
+            for p in _pods(env)
+        ],
+    }
+
+
+def cmd_up(a, env) -> int:
+    info = start_pod(a.model, gpu=a.gpu, hours=a.hours, disk=a.disk, cloud=a.cloud,
+                     min_cuda=a.min_cuda, timeout=a.timeout, wait=not a.no_wait, env=env)
+    if a.no_wait:
+        print(f"not waiting (--no-wait). Check: labeling-t-runpod status  (--model {a.model})")
+        return 0
+    return 0 if info["ready"] else 1
 
 
 def cmd_down(a, env) -> int:
-    pods = _pods(env)
-    targets = pods if a.all else [p for p in pods if str(p.get("name", "")).startswith(NAME_PREFIX)]
-    if not targets:
+    try:
+        deleted = stop_pods(env, pods=a.pods or None, all=a.all)
+    except AmbiguousPods as exc:
+        print(f"{len(exc.pods)} {NAME_PREFIX} pods running — pass a pod id, or --all for all of them:",
+              file=sys.stderr)
+        for p in exc.pods:
+            print(f"  {p['id']}  {p.get('name')}  ${p.get('costPerHr')}/hr", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    if not deleted:
         print("no matching pods running")
         return 0
-    for p in targets:
-        _runpodctl(["pod", "delete", p["id"]], env)
-        print(f"deleted {p['id']} ({p.get('name')})")
+    for p in deleted:
+        print(f"deleted {p['id']} ({p['name']})")
     return 0
 
 
 def cmd_status(a, env) -> int:
-    bal = json.loads(_runpodctl(["user", "-o", "json"], env))
-    print(f"balance: ${bal.get('clientBalance', 0):.2f} | spend/hr: ${bal.get('currentSpendPerHr', 0)}")
-    pods = _pods(env)
-    if not pods:
+    s = list_pods_with_balance(env)
+    print(f"balance: ${s['balance']:.2f} | spend/hr: ${s['spend_per_hr']}")
+    if not s["pods"]:
         print("no pods running")
         return 0
-    for p in pods:
-        print(f"  {p['id']}  {p.get('name')}  ${p.get('costPerHr')}/hr  {p.get('desiredStatus')}")
+    for p in s["pods"]:
+        print(f"  {p['id']}  {p['name']}  ${p['cost_per_hr']}/hr  {p['status']}")
     return 0
 
 
@@ -181,8 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--no-wait", action="store_true")
     up.set_defaults(func=cmd_up)
 
-    dn = sub.add_parser("down", help="delete this project's pods (stop billing)")
-    dn.add_argument("--all", action="store_true", help="delete ALL pods, not just labeling-t-*")
+    dn = sub.add_parser("down", help="delete a pod by id, or this project's pod (stop billing)")
+    dn.add_argument("pods", nargs="*", metavar="POD_ID",
+                    help="specific pod id(s) to delete (from `status`); omit to target this project's pod")
+    dn.add_argument("--all", action="store_true",
+                    help=f"delete ALL {NAME_PREFIX}-* pods (use when several are running)")
     dn.set_defaults(func=cmd_down)
 
     sub.add_parser("status", help="balance + running pods").set_defaults(func=cmd_status)

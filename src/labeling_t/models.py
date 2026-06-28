@@ -37,7 +37,11 @@ class ModelSpec:
     coord_space: CoordSpace = "norm"
     categories: tuple[str, ...] = ()      # default ask; overridable per run
     parse: ParseFn = parse_boxes
-    # Serving recipe (used by scripts/runpod.py to stand the model up on vLLM):
+    # Which serving backend hosts this model:
+    #   "vllm"         -> vLLM OpenAI chat endpoint (text out, spec.parse turns it into boxes)
+    #   "transformers" -> our FastAPI model-server (structured /infer; boxes already abs-px xyxy)
+    backend: str = "vllm"
+    # Serving recipe (used by runpod.py to stand the model up):
     hf_model: str = ""                    # HF repo to serve, e.g. Qwen/Qwen3-VL-8B-Instruct
     serve_args: str = ""                  # extra vllm args (max-model-len, etc.)
 
@@ -89,9 +93,25 @@ QWEN3_VL = ModelSpec(
     serve_args="--max-model-len 8192 --gpu-memory-utilization 0.95",
 )
 
+# OWLv2 (Google) open-vocab detector, served by OUR transformers model-server
+# (backend="transformers"). The server returns structured detections in ABSOLUTE
+# pixels, so coord_space="abs" and parse is unused on this path (the client builds
+# boxes from the JSON, not from text). First model of the transformers backend.
+OWLV2 = ModelSpec(
+    key="owlv2",
+    name="owlv2",
+    env_prefix="OWLV2",
+    prompt="",                            # queries (the category list) are sent structured, not as a prompt
+    coord_space="abs",
+    categories=("player", "ball", "referee"),
+    backend="transformers",
+    hf_model="google/owlv2-base-patch16-ensemble",
+)
+
 REGISTRY: dict[str, ModelSpec] = {
     LOCATE_ANYTHING.key: LOCATE_ANYTHING,
     QWEN3_VL.key: QWEN3_VL,
+    OWLV2.key: OWLV2,
 }
 
 

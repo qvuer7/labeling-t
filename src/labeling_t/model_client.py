@@ -21,6 +21,7 @@ from pathlib import Path
 import httpx
 
 from .models import ModelSpec
+from .prelabel import RawInference
 
 _MEDIA_TYPES = {
     ".jpg": "image/jpeg",
@@ -136,6 +137,89 @@ class VLLMClient:
         self._http.close()
 
     def __enter__(self) -> "VLLMClient":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+class TransformersClient:
+    """httpx client for OUR transformers model-server (structured `/infer`).
+
+    Unlike vLLM (text out, then spec.parse), this backend returns boxes already
+    parsed and in absolute pixels, plus the image dims — so it implements
+    `infer_raw` directly and the framework never parses model text. The wire
+    payload is uniform across every detector: {image_url, queries, params}; the
+    server's ModelAdapter maps it per model. Mirrors VLLMClient's retry policy.
+
+        presigned URL ──POST /infer {image_url,queries,params}──► server
+        RawInference(boxes abs-px, width, height) ◄── {width,height,detections}
+    """
+
+    def __init__(
+        self,
+        endpoint: str,
+        spec: ModelSpec,
+        *,
+        api_key: str | None = None,
+        categories: list[str] | None = None,
+        params: dict | None = None,
+        timeout: float = 120.0,
+        max_retries: int = 2,
+        transport: httpx.BaseTransport | None = None,
+    ):
+        self.spec = spec
+        self.categories = list(categories) if categories is not None else list(spec.categories)
+        self.params = dict(params) if params else {}
+        self.max_retries = max_retries
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        self._http = httpx.Client(
+            base_url=endpoint.rstrip("/"), headers=headers, timeout=timeout, transport=transport,
+        )
+
+    @classmethod
+    def from_env(cls, spec: ModelSpec, *, categories: list[str] | None = None, **kw) -> "TransformersClient":
+        endpoint = spec.endpoint_from_env()
+        if not endpoint:
+            raise ValueError(f"{spec.env_prefix}_ENDPOINT is not set (.env)")
+        return cls(endpoint, spec, api_key=spec.api_key_from_env(), categories=categories, **kw)
+
+    def build_payload(self, image_path: str | Path) -> dict:
+        # image is sent as a URL the server fetches (presigned S3 passthrough), or
+        # base64 for a local file — same _image_url helper as the vLLM path.
+        return {"image_url": _image_url(image_path), "queries": self.categories, "params": self.params}
+
+    def infer_raw(self, image_path: str | Path) -> RawInference:
+        """Structured detections for one image. Retries transient (5xx/network);
+        raises on 4xx and on the final attempt so prelabel records the failure."""
+        payload = self.build_payload(image_path)
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = self._http.post("/infer", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                boxes = [
+                    (d["bbox"], d["label"], d.get("score"))
+                    for d in data.get("detections", [])
+                ]
+                return RawInference(boxes=boxes, width=data.get("width"), height=data.get("height"))
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                status = getattr(getattr(exc, "response", None), "status_code", 500)
+                if isinstance(exc, httpx.HTTPStatusError) and status < 500:
+                    raise
+                if attempt < self.max_retries:
+                    time.sleep(0.5 * (attempt + 1))
+        assert last_exc is not None
+        raise last_exc
+
+    def close(self) -> None:
+        self._http.close()
+
+    def __enter__(self) -> "TransformersClient":
         return self
 
     def __exit__(self, *exc) -> None:

@@ -62,16 +62,33 @@ labeling-t to-coco  --labels verified/ --out dataset.coco.json
 
 Label Studio UI: http://localhost:8080 (`admin@labeling-t.local` / `labeling-t-admin`).
 
+## Web UI
+
+A browser console drives the same loop — upload → auto-label → send to Label
+Studio → pull verified — with live progress, plus a RunPod GPU panel. It's a thin
+FastAPI adapter over the pipeline functions; nothing new about the schema.
+
+```bash
+uv sync --extra web --extra integrations --extra cloud
+docker compose up -d            # Label Studio :8080 (separate, as above)
+labeling-t-web                  # -> http://127.0.0.1:8000
+```
+
+It reads `LS_URL` / `LS_API_KEY` from `.env` so the token isn't retyped per
+action (the local compose ships a fixed dev token). Local operator tool: binds
+`127.0.0.1`, no auth — front it with Caddy + basic-auth if you expose it.
+
 ## Layout
 
 ```
 src/labeling_t/      the framework (src-layout, pip-installable)
   schema · geometry · models · gpu · runpod · model_client · prelabel · storage
-  adapters/{label_studio,coco} · cli · config
+  adapters/{label_studio,coco} · ingest · verify · cli · config
+  web/                 FastAPI app + static SPA (labeling-t-web)
 scripts/             spike.py · ls_setup.py · serve_vllm.sh
-tests/               72 tests
+tests/               103 tests
 docker-compose.yml + nginx/   local Label Studio + CORS image server
 ```
 
-Console commands: `labeling-t` (prelabel / import-ls / from-ls / to-coco / ls-config)
-and `labeling-t-runpod` (up / down / status / gpus).
+Console commands: `labeling-t` (prelabel / import-ls / from-ls / to-coco / ls-config),
+`labeling-t-runpod` (up / down / status / gpus), and `labeling-t-web` (browser console).
