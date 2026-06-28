@@ -87,14 +87,14 @@ def _serving(spec: ModelSpec) -> dict:
     HTTP path that signals 'ready'. vLLM = its official image + /v1/models; our
     transformers server = the GHCR image + /health, with MODEL/HF_* via env."""
     if spec.backend == "transformers":
-        env_pairs = [f"MODEL={spec.key}"]
+        env = {"MODEL": spec.key}
         if spec.hf_model:
-            env_pairs.append(f"HF_MODEL={spec.hf_model}")
+            env["HF_MODEL"] = spec.hf_model
         token = os.environ.get("HF_TOKEN", "").strip()
         if token:  # gated weights (e.g. LocateAnything-3B) need an HF token in the pod
-            env_pairs.append(f"HF_TOKEN={token}")
-        return {"image": MODELS_IMAGE, "docker_args": "", "env": env_pairs, "health": "/health"}
-    return {"image": IMAGE, "docker_args": _docker_args(spec), "env": [], "health": "/v1/models"}
+            env["HF_TOKEN"] = token
+        return {"image": MODELS_IMAGE, "docker_args": "", "env": env, "health": "/health"}
+    return {"image": IMAGE, "docker_args": _docker_args(spec), "env": {}, "health": "/v1/models"}
 
 
 def _proxy(pod_id: str) -> str:
@@ -160,8 +160,8 @@ def start_pod(
     ]
     if serving["docker_args"]:
         cmd += ["--docker-args", serving["docker_args"]]
-    for kv in serving["env"]:        # transformers backend: MODEL / HF_MODEL / HF_TOKEN
-        cmd += ["--env", kv]
+    if serving["env"]:               # runpodctl wants env as ONE json object string
+        cmd += ["--env", json.dumps(serving["env"])]
     cmd += ["-o", "json"]
     out = _runpodctl(cmd, env)
     pod = json.loads(out)
