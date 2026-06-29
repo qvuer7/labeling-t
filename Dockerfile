@@ -1,8 +1,9 @@
 # labeling-t model-server image (the `[models]` extra). Runs ON the RunPod GPU.
 #
-# torch pulls its own CUDA (cu13) via nvidia-* wheels, so a SLIM base is enough
-# for the detectors (no nvcc / CUDA toolkit needed). SAM2 (PR-4) compiles a CUDA
-# `_C` extension -> it will need a cuda-devel base then; cross that at PR-4.
+# torch pulls its own CUDA (cu13) via nvidia-* wheels, so a SLIM base is enough —
+# no nvcc / CUDA toolkit needed. This holds for SAM2 too: we use transformers'
+# NATIVE Sam2 (plain torch), NOT facebookresearch/sam2 (which compiles a custom
+# CUDA `_C` ext and would force a cuda-devel base). All adapters share this image.
 #
 # Multi-stage by LAYER: a server-code change rebuilds only the thin app layer,
 # not the multi-GB torch+CUDA deps layer (keeps the manual build/push loop sane).
@@ -21,8 +22,10 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/weights
 
 # libgomp1: OpenMP runtime torch needs. (No CUDA toolkit — torch wheels carry it.)
+# libglib2.0-0: cv2 (opencv-python-headless) needs libgthread; LocateAnything's
+# processor imports cv2 at module top, so without it from_pretrained ImportErrors.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl libgomp1 \
+        ca-certificates curl libgomp1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv
 

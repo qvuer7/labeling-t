@@ -1,15 +1,23 @@
-"""Model transport — talk to a REMOTE vLLM endpoint over HTTP.
+"""Model transport — talk to a model over HTTP from this GPU-less machine.
 
-The model lives on a rented GPU box running vLLM; this machine has no GPU and no
-torch. The client is bound to a ModelSpec (the model's identity: served name +
-prompt) and only needs the endpoint, which comes from the environment. The
-labeling framework therefore stays decoupled from model hosting.
+Two transports, picked per ModelSpec by `client_for`:
 
-    image bytes ──base64 data URI──► chat request ──httpx POST──► vLLM
+  ChatClient        — any OpenAI-compatible chat endpoint: a vLLM box we rent, or
+                      a hosted vendor API (OpenAI, Google Gemini via its compat
+                      layer). Same wire shape for all; they differ only in the
+                      endpoint + a couple of quirk params, which ride on the spec.
+  TransformersClient — our own FastAPI model-server's structured /infer.
+
+The client is bound to a ModelSpec (the model's identity: served name + prompt)
+and only needs the endpoint + key, which come from the environment (or, for a
+SaaS provider, are baked into the spec). The framework stays decoupled from where
+— and by whom — the model is hosted.
+
+    image bytes ──base64 data URI──► chat request ──httpx POST──► vLLM / OpenAI / Gemini
                                        (model name + prompt from the ModelSpec)
 
-Returns the raw assistant TEXT. Turning that into boxes is spec.parse (in
-models.py / prelabel.parse_boxes), kept separate from transport.
+ChatClient returns the raw assistant TEXT. Turning that into boxes is spec.parse
+(in models.py / prelabel.parse_boxes), kept separate from transport.
 """
 
 from __future__ import annotations
@@ -50,8 +58,9 @@ def _image_url(ref: str | Path) -> str:
     return _data_uri(ref)
 
 
-class VLLMClient:
-    """httpx client for one model (a ModelSpec) at one endpoint."""
+class ChatClient:
+    """httpx client for one model (a ModelSpec) at one OpenAI-compatible chat
+    endpoint — a rented vLLM box or a hosted vendor API (OpenAI, Gemini)."""
 
     def __init__(
         self,
@@ -63,19 +72,15 @@ class VLLMClient:
         timeout: float = 120.0,
         max_retries: int = 2,
         max_tokens: int = 1024,
-        repetition_penalty: float = 1.1,
         transport: httpx.BaseTransport | None = None,
     ):
         self.spec = spec
         # Per-run category override; falls back to the spec's defaults.
         self.categories = list(categories) if categories is not None else list(spec.categories)
         self.max_retries = max_retries
-        # Cap generation: a box JSON is a few hundred tokens. Without this, vLLM
-        # generates to the full context and a single request takes minutes.
+        # Cap generation: a box JSON is a few hundred tokens. Without this, a
+        # looping model generates to the full context and one request takes minutes.
         self.max_tokens = max_tokens
-        # Grounding VLMs greedily loop, repeating the same box to the token cap.
-        # A repetition penalty (vLLM honors it on the OpenAI route) stops that.
-        self.repetition_penalty = repetition_penalty
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -87,8 +92,9 @@ class VLLMClient:
         )
 
     @classmethod
-    def from_env(cls, spec: ModelSpec, *, categories: list[str] | None = None, **kw) -> "VLLMClient":
-        """Build a client for `spec`, reading {PREFIX}_ENDPOINT / _API_KEY."""
+    def from_env(cls, spec: ModelSpec, *, categories: list[str] | None = None, **kw) -> "ChatClient":
+        """Build a client for `spec`, reading {PREFIX}_ENDPOINT / _API_KEY (the
+        endpoint falls back to the spec's baked-in default for SaaS providers)."""
         endpoint = spec.endpoint_from_env()
         if not endpoint:
             raise ValueError(f"{spec.env_prefix}_ENDPOINT is not set (.env)")
@@ -96,7 +102,7 @@ class VLLMClient:
 
     def build_payload(self, image_path: str | Path) -> dict:
         prompt = self.spec.prompt.format(categories=", ".join(self.categories))
-        return {
+        payload = {
             "model": self.spec.name,
             "messages": [
                 {
@@ -109,8 +115,11 @@ class VLLMClient:
             ],
             "temperature": 0.0,
             "max_tokens": self.max_tokens,
-            "repetition_penalty": self.repetition_penalty,
         }
+        # Per-model quirk knobs (vLLM repetition_penalty, a provider response_format).
+        # Merged last so a spec can also override a base field if it ever needs to.
+        payload.update(self.spec.extra_body)
+        return payload
 
     def infer(self, image_path: str | Path) -> str:
         """Raw assistant text for one image. Retries transient (5xx/network)
@@ -120,7 +129,7 @@ class VLLMClient:
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                resp = self._http.post("/v1/chat/completions", json=payload)
+                resp = self._http.post(self.spec.chat_path, json=payload)
                 resp.raise_for_status()
                 return resp.json()["choices"][0]["message"]["content"]
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
@@ -136,7 +145,7 @@ class VLLMClient:
     def close(self) -> None:
         self._http.close()
 
-    def __enter__(self) -> "VLLMClient":
+    def __enter__(self) -> "ChatClient":
         return self
 
     def __exit__(self, *exc) -> None:
@@ -150,7 +159,7 @@ class TransformersClient:
     parsed and in absolute pixels, plus the image dims — so it implements
     `infer_raw` directly and the framework never parses model text. The wire
     payload is uniform across every detector: {image_url, queries, params}; the
-    server's ModelAdapter maps it per model. Mirrors VLLMClient's retry policy.
+    server's ModelAdapter maps it per model. Mirrors ChatClient's retry policy.
 
         presigned URL ──POST /infer {image_url,queries,params}──► server
         RawInference(boxes abs-px, width, height) ◄── {width,height,detections}
@@ -191,21 +200,15 @@ class TransformersClient:
         # base64 for a local file — same _image_url helper as the vLLM path.
         return {"image_url": _image_url(image_path), "queries": self.categories, "params": self.params}
 
-    def infer_raw(self, image_path: str | Path) -> RawInference:
-        """Structured detections for one image. Retries transient (5xx/network);
+    def _post_infer(self, payload: dict) -> dict:
+        """POST /infer with the shared retry policy: retries transient (5xx/network);
         raises on 4xx and on the final attempt so prelabel records the failure."""
-        payload = self.build_payload(image_path)
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
                 resp = self._http.post("/infer", json=payload)
                 resp.raise_for_status()
-                data = resp.json()
-                boxes = [
-                    (d["bbox"], d["label"], d.get("score"))
-                    for d in data.get("detections", [])
-                ]
-                return RawInference(boxes=boxes, width=data.get("width"), height=data.get("height"))
+                return resp.json()
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                 last_exc = exc
                 status = getattr(getattr(exc, "response", None), "status_code", 500)
@@ -216,6 +219,32 @@ class TransformersClient:
         assert last_exc is not None
         raise last_exc
 
+    def infer_raw(self, image_path: str | Path) -> RawInference:
+        """Structured detections for one image (detector backends)."""
+        data = self._post_infer(self.build_payload(image_path))
+        boxes = [(d["bbox"], d["label"], d.get("score")) for d in data.get("detections", [])]
+        return RawInference(boxes=boxes, width=data.get("width"), height=data.get("height"))
+
+    def segment(
+        self,
+        image_path: str | Path,
+        boxes: list[list[float]],
+        *,
+        labels: list[str] | None = None,
+        scores: list[float | None] | None = None,
+    ) -> list[dict]:
+        """Stage-2 segmentation: send box prompts (a detector's output) and get one
+        masked detection per box back. The segmenter (SAM2) reads the prompts from
+        `params`; the wire shape is otherwise the detector's. Returns the raw
+        detection dicts [{bbox, label, score, mask:RLE}] — masks ride as COCO RLE."""
+        payload = {
+            "image_url": _image_url(image_path),
+            "queries": [],
+            "params": {**self.params, "boxes": boxes,
+                       "labels": labels or [], "scores": scores or []},
+        }
+        return self._post_infer(payload).get("detections", [])
+
     def close(self) -> None:
         self._http.close()
 
@@ -224,3 +253,15 @@ class TransformersClient:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+def client_for(spec: ModelSpec, *, categories: list[str] | None = None, **kw):
+    """Build the right transport for a spec's backend, from the environment.
+
+    The transformers backend returns structured boxes from our model-server; every
+    other backend (vllm / openai / gemini) speaks OpenAI chat, so ChatClient drives
+    them all. Callers stay backend-agnostic — prelabel duck-types infer vs infer_raw.
+    """
+    if spec.backend == "transformers":
+        return TransformersClient.from_env(spec, categories=categories, **kw)
+    return ChatClient.from_env(spec, categories=categories, **kw)

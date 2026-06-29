@@ -13,8 +13,8 @@ from PIL import Image
 from labeling_t.cli import main
 
 
-class FakeVLLMClient:
-    """Drop-in for VLLMClient: carries a spec, returns canned (normalized) boxes."""
+class FakeChatClient:
+    """Drop-in for ChatClient: carries a spec, returns canned (normalized) boxes."""
 
     def __init__(self, endpoint, spec, *, api_key=None, categories=None, **kw):
         self.spec = spec
@@ -44,7 +44,8 @@ def _images(tmp_path, n=3, w=100, h=100):
 
 
 def test_prelabel_then_to_coco(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("labeling_t.model_client.VLLMClient", FakeVLLMClient)
+    # qwen3_vl is the vllm backend, so client_for builds a ChatClient.
+    monkeypatch.setattr("labeling_t.model_client.ChatClient", FakeChatClient)
     images = _images(tmp_path, n=3)
     labels_dir = str(tmp_path / "labels")
 

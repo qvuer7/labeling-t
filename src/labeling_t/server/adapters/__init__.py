@@ -9,14 +9,18 @@ adapter file.
 from __future__ import annotations
 
 from .base import ModelAdapter, StubAdapter
+from .locateanything import LocateAnythingAdapter
 from .owlv2 import Owlv2Adapter
+from .sam2 import Sam2Adapter
 
 # key -> factory(taking the HF model id). Kept as factories so nothing loads
 # until the server picks ONE and calls load().
 _FACTORIES = {
     "stub": lambda hf: StubAdapter(),
     "owlv2": lambda hf: Owlv2Adapter(hf or "google/owlv2-base-patch16-ensemble"),
-    # PR-2: "grounding_dino", "locate_anything"
+    "locate_anything": lambda hf: LocateAnythingAdapter(hf or "nvidia/LocateAnything-3B"),
+    "sam2": lambda hf: Sam2Adapter(hf or "facebook/sam2.1-hiera-large"),
+    # PR-2: "grounding_dino"
 }
 
 
@@ -27,4 +31,7 @@ def get_adapter(model: str, hf_model: str | None = None) -> ModelAdapter:
         raise KeyError(f"unknown model {model!r}; known: {sorted(_FACTORIES)}") from None
 
 
-__all__ = ["ModelAdapter", "StubAdapter", "Owlv2Adapter", "get_adapter"]
+__all__ = [
+    "ModelAdapter", "StubAdapter", "Owlv2Adapter", "LocateAnythingAdapter",
+    "Sam2Adapter", "get_adapter",
+]

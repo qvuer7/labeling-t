@@ -146,7 +146,7 @@ def create_app() -> FastAPI:
     def prelabel(req: PrelabelReq) -> dict:
         from ..layout import DatasetLayout
         from ..manifest import build_manifest
-        from ..model_client import VLLMClient
+        from ..model_client import client_for
         from ..models import get_spec
         from ..prelabel import prelabel_cloud
         from ..storage import open_storage
@@ -161,7 +161,7 @@ def create_app() -> FastAPI:
             if not frames:
                 raise ValueError(f"no frames under {frames_prefix} (upload first)")
             job.log(f"labeling {len(frames)} frames with {spec.name}")
-            client = VLLMClient.from_env(spec, categories=req.categories or None)
+            client = client_for(spec, categories=req.categories or None)
             with client:
                 n = prelabel_cloud(
                     frames, client, labels_prefix, storage=storage,

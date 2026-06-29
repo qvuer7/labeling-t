@@ -7,7 +7,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from labeling_t.model_client import VLLMClient, _data_uri
+from labeling_t.model_client import ChatClient, TransformersClient, client_for, _data_uri
 from labeling_t.models import ModelSpec
 
 SPEC = ModelSpec(
@@ -35,7 +35,7 @@ def test_infer_returns_assistant_text(tmp_path):
         captured["url"] = str(request.url)
         return _chat_response('[{"bbox_2d":[0,0,1,1],"label":"player"}]')
 
-    client = VLLMClient(
+    client = ChatClient(
         "http://gpu:8000", SPEC,
         categories=["player"], transport=httpx.MockTransport(handler),
     )
@@ -63,7 +63,7 @@ def test_retries_5xx_then_succeeds(tmp_path):
             return httpx.Response(503, text="overloaded")
         return _chat_response("[]")
 
-    client = VLLMClient(
+    client = ChatClient(
         "http://gpu:8000", SPEC, max_retries=2, transport=httpx.MockTransport(handler)
     )
     assert client.infer(_img(tmp_path)) == "[]"
@@ -77,7 +77,7 @@ def test_does_not_retry_4xx(tmp_path):
         calls["n"] += 1
         return httpx.Response(400, text="bad request")
 
-    client = VLLMClient(
+    client = ChatClient(
         "http://gpu:8000", SPEC, max_retries=3, transport=httpx.MockTransport(handler)
     )
     with pytest.raises(httpx.HTTPStatusError):
@@ -93,7 +93,7 @@ def test_infer_with_url_passes_url_not_base64():
         captured["body"] = json.loads(request.content)
         return _chat_response("[]")
 
-    client = VLLMClient("http://gpu:8000", SPEC, transport=httpx.MockTransport(handler))
+    client = ChatClient("http://gpu:8000", SPEC, transport=httpx.MockTransport(handler))
     client.infer("https://spaces.example/presigned/frame_00001.jpg?sig=abc")
     img = captured["body"]["messages"][0]["content"][1]["image_url"]["url"]
     assert img == "https://spaces.example/presigned/frame_00001.jpg?sig=abc"
@@ -112,8 +112,67 @@ def test_api_key_sets_auth_header(tmp_path):
         seen["auth"] = request.headers.get("authorization")
         return _chat_response("[]")
 
-    client = VLLMClient(
+    client = ChatClient(
         "http://gpu:8000", SPEC, api_key="secret", transport=httpx.MockTransport(handler)
     )
     client.infer(_img(tmp_path))
     assert seen["auth"] == "Bearer secret"
+
+
+def test_extra_body_merged_into_payload(tmp_path):
+    # vLLM's repetition_penalty (and any provider knob) rides on the spec, not the
+    # client — so a hosted API spec can omit it and avoid a 400.
+    spec = ModelSpec(
+        key="t", name="m", env_prefix="T", prompt="Detect: {categories}.",
+        extra_body={"repetition_penalty": 1.1},
+    )
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return _chat_response("[]")
+
+    ChatClient("http://gpu:8000", spec, transport=httpx.MockTransport(handler)).infer(_img(tmp_path))
+    assert captured["body"]["repetition_penalty"] == 1.1
+    # the base spec (no extra_body) sends none — what a hosted vendor needs.
+    captured.clear()
+    ChatClient("http://gpu:8000", SPEC, transport=httpx.MockTransport(handler)).infer(_img(tmp_path))
+    assert "repetition_penalty" not in captured["body"]
+
+
+def test_chat_path_from_spec(tmp_path):
+    # Gemini's OpenAI-compat layer lives at a different route than vLLM/OpenAI.
+    spec = ModelSpec(
+        key="t", name="m", env_prefix="T", prompt="Detect: {categories}.",
+        chat_path="/chat/completions",
+    )
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return _chat_response("[]")
+
+    base = "https://generativelanguage.googleapis.com/v1beta/openai"
+    ChatClient(base, spec, transport=httpx.MockTransport(handler)).infer(_img(tmp_path))
+    assert seen["url"] == base + "/chat/completions"
+
+
+def test_from_env_falls_back_to_spec_default_endpoint(monkeypatch):
+    # A SaaS provider bakes its URL into the spec; only the key need be in .env.
+    monkeypatch.delenv("OPENAI_ENDPOINT", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    spec = ModelSpec(
+        key="t", name="gpt-4o", env_prefix="OPENAI", prompt="Detect: {categories}.",
+        default_endpoint="https://api.openai.com/v1",
+    )
+    assert spec.endpoint_from_env() == "https://api.openai.com/v1"
+    client = ChatClient.from_env(spec, transport=httpx.MockTransport(lambda r: _chat_response("[]")))
+    assert str(client._http.base_url).rstrip("/") == "https://api.openai.com/v1"
+
+
+def test_client_for_routes_by_backend(monkeypatch):
+    monkeypatch.setenv("T_ENDPOINT", "http://x:8000")
+    chat = ModelSpec(key="t", name="m", env_prefix="T", prompt="p", backend="openai")
+    structured = ModelSpec(key="t", name="m", env_prefix="T", prompt="p", backend="transformers")
+    assert isinstance(client_for(chat), ChatClient)
+    assert isinstance(client_for(structured), TransformersClient)

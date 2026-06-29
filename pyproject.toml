@@ -32,10 +32,24 @@ models = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "torch>=2.2",             # transformers backbone (CUDA build via the Docker base image)
-    "transformers>=4.45",     # OWLv2 / GroundingDINO / LocateAnything-3B
+    "torchvision>=0.17",      # LocateAnything's processor imports torchvision.io/transforms at module top
+    # Pinned to LocateAnything-3B's tested version (its model card Installation):
+    # the model ships VENDORED modeling_qwen2.py/modeling_vit.py snapshots tied to
+    # 4.57's config + attn internals — transformers 5.x drift (rope_theta moved to
+    # rope_parameters, the allow_all_kernels attn kwarg, ...) breaks its remote code.
+    # OWLv2's adapter already carries a 4.x post-process fallback, so it's fine here.
+    "transformers==4.57.1",   # OWLv2 / GroundingDINO / LocateAnything-3B
     "scipy>=1.10",            # OWLv2's Owlv2ImageProcessorPil needs it for resize (else /infer 500s)
     "pillow>=10.0",
     "pycocotools>=2.0",       # COCO RLE encode/decode for SAM2 masks (PR-3+)
+    # LocateAnything-3B is trust_remote_code: its processing_/modeling_ modules
+    # import these at TOP LEVEL (so from_pretrained fails without them), even
+    # though lmdb/decord only back video/dataset paths we never hit on /infer:
+    "requests>=2.31",            # processing_locateanything.py: URL image fetch
+    "peft>=0.11",                # modeling_locateanything.py: LoraConfig at import
+    "opencv-python-headless>=4.9",  # cv2 (headless: no GUI/GL libs in the container)
+    "lmdb>=1.4",                 # dataset backend import (unused at inference)
+    "decord>=0.6",               # video decode import (unused at inference)
     # NOTE: sam2 added at PR-4; pin then (may force its own image — dep solve).
 ]
 
