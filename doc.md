@@ -1,11 +1,15 @@
 # Labeling-T — Architecture & Status
 
-Auto-labeling backend: run a foundation model over raw images once, get
-pre-labels, verify the uncertain ones by hand, export to a training format.
-The model carries most of the labeling load; a human only corrects.
+Auto-labeling backend: run a vision model over raw images once, get pre-labels,
+verify the uncertain ones by hand, export to a training format. The model carries
+most of the labeling load; a human only corrects.
 
-Status: **v0 — boxes only, images only, one model. Pipeline proven end-to-end.**
-61 tests passing.
+Status: **v0.x — boxes + masks, images only. Pipeline proven end-to-end on real
+basketball footage. 125 tests passing.**
+
+Scope has grown from "one detector" to **a model registry across three serving
+backends + a two-stage detect→segment pipeline**, but the contract below is
+unchanged — that's the design working.
 
 ---
 
@@ -14,27 +18,26 @@ Status: **v0 — boxes only, images only, one model. Pipeline proven end-to-end.
 There is exactly one idea holding this project together:
 
 > An **owned, neutral label schema** is the canonical representation. Every model,
-> every tool, every export format is a **swappable adapter** hanging off it.
-> Nothing else is allowed to become the contract.
+> every serving backend, every export format is a **swappable adapter** hanging
+> off it. Nothing else is allowed to become the contract.
 
-This is a direct response to prior attempts that died from over-generalizing and
-coupling everything to one tool/model. Here, the model (Qwen3-VL), the
-verification UI (Label Studio), and the export format (COCO) are all
-interchangeable. Swapping any of them touches one adapter, not the pipeline.
+This is a direct response to prior attempts that died from coupling everything to
+one tool/model. Here the models, the verification UI (Label Studio), and the
+export format (COCO) are all interchangeable. Swapping any of them touches one
+adapter, not the pipeline.
 
 ```
-                       ┌──────────────────────────┐
-   model adapters  →   │   NEUTRAL SCHEMA (ours)   │   →  export adapters
-                       │  ImageLabels / Detection  │
-   Qwen3-VL ──────────►│  abs-pixel xyxy boxes     │──────► COCO (supervision)
-   (LocateAnything)    │  category / score / source│──────► Label Studio import
-   (SAM2, later)       └──────────────────────────┘──────► (YOLO / FiftyOne, later)
-                                   ▲
-                       Label Studio verified labels
-                       flow back IN via from_label_studio
+   model adapters         ┌──────────────────────────┐    export adapters
+ (3 serving backends)     │   NEUTRAL SCHEMA (ours)   │
+ OWLv2 / LocateAnything ─►│  ImageLabels / Detection  │─► COCO (supervision)
+ Qwen3-VL (vLLM)         ►│  abs-pixel xyxy boxes     │─► Label Studio import
+ GPT-4o / Gemini (API)   ►│  category / score / source│─► (YOLO / FiftyOne, later)
+ SAM2 (masks, stage 2)  ─►└──────────────────────────┘
+                                      ▲
+                          Label Studio verified labels flow back IN
 ```
 
-The on-disk labels are *ours* (`labels/<frame>.json`), not the model's raw output
+The on-disk labels are *ours* (`labels/<frame>.json`), not any model's raw output
 and not Label Studio's format. That decoupling is the whole point.
 
 ---
@@ -42,51 +45,84 @@ and not Label Studio's format. That decoupling is the whole point.
 ## 2. Pipeline (end to end)
 
 ```
- raw frames                prelabel (remote model)            human verify            export
-┌───────────┐   images    ┌────────────────────────┐   pre-   ┌──────────────┐  back  ┌──────────┐
-│ S3 / disk │ ──────────► │ Qwen3-VL on vLLM (GPU)  │  labels  │ Label Studio │ ─────► │  COCO    │
-│  (.jpg)   │             │  → parse → convert →    │ ───────► │  (correct    │ from-ls│ dataset  │
-└───────────┘             │     neutral schema JSON │          │   the boxes) │        └──────────┘
-                          └────────────────────────┘          └──────────────┘
-        ffmpeg                  scripts/spike.py                import-ls / from-ls / to-coco
-   (video → frames)            labeling_t.prelabel              labeling_t.adapters
+ raw frames        prelabel (a registered model)        human verify        export
+┌───────────┐  →  ┌────────────────────────────┐  pre-  ┌──────────────┐ back ┌────────┐
+│ S3 / disk │     │ detector → neutral-schema   │ labels │ Label Studio │ ───► │  COCO  │
+│  (.jpg)   │ ──► │   JSON  (+ SAM2 masks, opt) │ ─────► │ (correct it) │from- │ dataset│
+└───────────┘     └────────────────────────────┘        └──────────────┘  ls  └────────┘
+     ffmpeg            prelabel / prelabel-cloud         import-ls-cloud / from-ls-cloud
 ```
 
-Per frame, `prelabel`:
-1. reads image dimensions (W/H),
-2. POSTs image + prompt to the vLLM endpoint (`model_client.VLLMClient`),
-3. parses the model's text → `(box, label, score)` (`prelabel.parse_boxes`),
-4. converts coords to absolute pixels (`geometry`), clamps to image bounds,
-5. maps model labels → your categories, filters by score,
-6. wraps the result in the neutral schema and writes `labels/<frame>.json`.
+Per frame, prelabel: reads dims, runs the model, converts coords to absolute
+pixels, maps model labels → your categories, filters by score, wraps in the
+neutral schema, writes `labels/<frame>.json`. **Two-stage (optional):** a
+detector produces boxes, then SAM2 turns each box into a mask.
 
 ---
 
-## 3. Components (`labeling_t/`)
+## 3. Models & serving backends
 
-| Module | Responsibility |
-|--------|----------------|
-| `schema.py` | The owned contract: `BBox`, `Detection`, `ImageLabels`. Absolute-pixel `xyxy`. `extra="forbid"` so the schema can't sprawl. v0 is Detection-only; mask/keypoint/track_id extension recipe is documented inline. |
-| `geometry.py` | All coordinate math in one place: normalized↔abs, abs↔percent (Label Studio), abs→COCO `xywh`. The single bug-prone zone, isolated and heavily tested. |
-| `models.py` | `ModelSpec` registry. Each model's intrinsic behavior — served name, prompt, `coord_space`, default categories, parser — lives here, **not** in `.env`. |
-| `storage.py` | `Storage` abstraction: local + S3 (DO Spaces) backends. `presigned_url`, `image_size` (ranged header read), `list`, `read/write`. The cloud source/sink. |
-| `layout.py` | `DatasetLayout` — the single definition of the bucket folder structure (dataset-grouped). Frames/labels/verified/export keys can't drift. |
-| `frames.py` | Video → keyframes (ffmpeg `-skip_frame nokey`) → storage. The `labeling-t frames` command. Idempotent, stride-able. |
-| `gpu.py` | `PodSpec` + GPU preset registry (rtx4090/5090, a40, a100, h100…). Rentable hardware config, separate from model behavior. |
-| `runpod.py` | RunPod provisioning (the `labeling-t-runpod` command): `up`/`down`/`status`/`gpus`. Builds the serving recipe from a `ModelSpec` + `PodSpec`, writes the endpoint to `.env`. |
-| `model_client.py` | `VLLMClient`: httpx transport to a remote vLLM OpenAI-compatible endpoint. Sends image (base64) + prompt; caps `max_tokens`; applies `repetition_penalty`; retries 5xx/network. |
-| `prelabel.py` | `parse_boxes` (truncation-tolerant, deduping) + batch orchestration (`prelabel`): bounded-concurrency requests, streams from disk, resumes by skipping already-written frames, routes per-frame errors to `failures.jsonl`. |
-| `adapters/label_studio.py` | Neutral → LS tasks + pre-annotations (percent coords), auto-generated labeling config from categories, and `from_label_studio` to pull verified labels back. |
-| `adapters/coco.py` | Neutral → COCO via Roboflow `supervision` (gives YOLO + tracking for free later). |
-| `cli.py` | `labeling-t {prelabel, import-ls, from-ls, to-coco, ls-config}`. |
-| `config.py` | Loads `.env` (infra only). |
+A `ModelSpec` (in `models.py`) bundles everything **intrinsic** to a model —
+served name, prompt, coord space, default categories, which backend hosts it.
+Only the endpoint + key come from the environment, per model. **Three backends,
+two transport clients:**
 
-`scripts/`: `spike.py` (per-model run/diagnostic), `ls_setup.py` (enable LS API
-tokens), `serve_vllm.sh` (reference GPU serve command).
+| Model (key) | Role | Backend | Where it runs |
+|---|---|---|---|
+| `owlv2` | open-vocab detector | `transformers` | our model-server (GPU pod) |
+| `locate_anything` | grounding VLM detector | `transformers` | our model-server (GPU pod) |
+| `sam2` | **segmenter** (box→mask) | `transformers` | our model-server (GPU pod) |
+| `qwen3_vl` | grounding VLM detector | `vllm` | stock `vllm/vllm-openai` (GPU pod) |
+| `openai_vl` | general VLM (GPT-4o) | `openai` | hosted API (no GPU) |
+| `gemini_vl` | general VLM (Gemini) | `gemini` | hosted API (no GPU) |
+
+- **`ChatClient`** drives every OpenAI-compatible chat endpoint — a vLLM box we
+  rent *and* hosted OpenAI/Gemini. Text out → `spec.parse` → boxes. The three
+  differ only by endpoint + a couple of quirk params (`extra_body`), carried on
+  the spec.
+- **`TransformersClient`** drives our model-server's structured `/infer` (boxes
+  already abs-px, dims included) and its `segment()` (box prompts → masks).
+- `client_for(spec)` picks the transport by backend; `prelabel` duck-types
+  `infer` vs `infer_raw`, so orchestration is backend-agnostic.
+
+Adding a model = a new `ModelSpec` (+ for the transformers backend, one server
+adapter). The neutral schema and the pipeline don't move.
 
 ---
 
-## 4. The neutral schema (the contract)
+## 4. The transformers model-server (`server/`)
+
+Our own FastAPI server, **one Docker image for every transformers model** —
+`MODEL` (env) selects which adapter the pod loads at startup.
+
+```
+POST /infer  {image_url, queries[], params{}}  →  {width, height, detections[]}
+GET  /health                                   →  {status, model, ready}
+```
+
+- **One wire contract** (`contract.py`): `InferRequest` / `InferResponse` /
+  `WireDetection {bbox abs-px, label, score, mask?}`. `bbox` is original-image
+  absolute pixels; `mask` is COCO RLE (only the segmenter fills it).
+- **One adapter per model** (`server/adapters/`): `owlv2`, `locateanything`,
+  `sam2`, plus `stub` (no torch, for CI/seam tests, `MODEL=stub`). Each adapter
+  owns the model-specific input/post-processing; torch is imported lazily inside
+  `load()`/`detect()` so importing the registry stays GPU-free.
+- **Box prompts for SAM2 ride in `params`** (`boxes`/`labels`/`scores`) — no new
+  payload type; detectors ignore them, SAM2 uses them.
+
+Per-model gotchas worth knowing (documented inline in each adapter):
+- **OWLv2** pads images to a square; boxes are post-processed against the square
+  size then unpadded/clamped, dropping phantom boxes in the padding.
+- **LocateAnything-3B** is a generative VLM with vendored model code that pins
+  **transformers==4.57.1** (a guarded shim covers a future bump). It's queried
+  **one category per pass** (correct labels, no confidence scores), so a batch
+  run is several `generate()`s per frame → use `--concurrency 1` (see §6).
+- **SAM2** uses transformers' **native** `Sam2Model` — plain torch, **no custom
+  CUDA `_C` extension** — so it shares the slim image (not `facebookresearch/sam2`).
+
+---
+
+## 5. The neutral schema (the contract)
 
 ```python
 class BBox(BaseModel):          # absolute pixels, xyxy
@@ -95,8 +131,8 @@ class BBox(BaseModel):          # absolute pixels, xyxy
 class Detection(BaseModel):
     bbox: BBox
     category: str
-    score: float | None         # model confidence; None once human-verified
-    source: str | None          # provenance, e.g. "qwen3-vl"
+    score: float | None         # model confidence; None once human-verified or generative
+    source: str | None          # provenance, e.g. "locate-anything-3b"
 
 class ImageLabels(BaseModel):
     image_path: str
@@ -104,222 +140,121 @@ class ImageLabels(BaseModel):
     detections: list[Detection]
 ```
 
-Canonical convention: **absolute-pixel `xyxy`**. This aligns with `supervision`'s
-internal representation (so COCO export is free) and makes every other system a
-single conversion away. `extra="forbid"` rejects unknown fields, which is what
-keeps the schema from accumulating per-case junk.
+Canonical convention: **absolute-pixel `xyxy`** (aligns with `supervision`, so
+COCO export is near-free). `extra="forbid"` keeps the schema from accumulating
+per-case junk.
 
-**Extension (documented in `schema.py`, do when a second type lands):** add a
-shared `Annotation` base for the common fields, add sibling lists (`masks`,
-`keypoints`) on `ImageLabels`. Nothing built ahead of need.
-
----
-
-## 5. Model serving
-
-The model runs on a **remote GPU**; this codebase has no torch and needs no GPU —
-it only speaks HTTP to a vLLM OpenAI-compatible endpoint.
-
-- **Active model: `Qwen3-VL-8B-Instruct`** (spec key `qwen3_vl`). Modern open
-  grounding VLM. Outputs `[{"bbox_2d":[x1,y1,x2,y2],"label":..}]` in **0–1000
-  normalized** coords (`coord_space="norm1000"`).
-- **Dropped: `LocateAnything-3B`** — its custom architecture isn't servable on
-  stock `vllm/vllm-openai` (kept in the registry for if/when a compatible image
-  exists). The pivot was a one-spec change, which is the design working.
-- **Serving (RunPod):** one command — `labeling-t-runpod up [--model qwen3_vl]
-  [--gpu rtx4090|a100|...]`. It builds the vLLM docker-args from the `ModelSpec`,
-  picks hardware from a `PodSpec`, pins a CUDA-13 node, sets an auto-terminate
-  backstop, rents the GPU, and writes the endpoint to `.env`. `down` stops
-  billing; `gpus` lists presets. (Recipe details + gotchas also in
-  `scripts/serve_vllm.sh` and project memory.)
-- **Two non-obvious knobs** (in `VLLMClient`): `max_tokens` cap and
-  `repetition_penalty` — without them grounding VLMs loop the same box to the
-  context limit (minutes/request, truncated JSON).
-
-### Batch inference
-
-Already handled. `prelabel` fires concurrent requests (`--concurrency`, a thread
-pool); vLLM's **continuous batching** packs them onto the GPU. You scale
-throughput by raising concurrency, not by manually batching. For huge datasets:
-streaming-from-disk and per-frame-resume are built in.
+**Masks today flow over the wire** (`WireDetection.mask`, COCO RLE) and through
+the two-stage demo, but are **not yet persisted into the neutral `Detection`** —
+adding `Detection.mask` + COCO `segmentation` export is the next schema extension
+(see plan.md). The extension recipe is documented inline in `schema.py`.
 
 ---
 
-## 6. Label Studio integration
+## 6. Cloud loop (codified in `layout.py`)
 
-`import-ls` creates a project, **auto-generates the labeling config** from your
-categories (so config and labels can't drift), and uploads tasks with
-pre-annotations (boxes converted to the percent coords LS expects). After a human
-corrects boxes, `from-ls` pulls them back into the neutral schema, and `to-coco`
-exports. That round-trip is the reason the backend owns the labels.
-
-Solved along the way (baked into scripts/compose):
-- **Auth:** LS 1.23 disables SDK (legacy) tokens by default → `scripts/ls_setup.py`
-  enables them and returns the key.
-- **Images:** LS's built-in local-file serving is tied to registered storage and
-  kept 404-ing → a small **nginx sidecar** serves frames over HTTP with CORS
-  (`nginx/images.conf`), and tasks reference normal `http://` URLs.
-
----
-
-## 7. What's implemented
-
-- [x] Neutral schema + geometry conversions (fully tested)
-- [x] Remote vLLM client (retries, token cap, repetition penalty)
-- [x] Batch prelabel orchestration (concurrency, streaming, resume, failure manifest)
-- [x] Model registry / swappable `ModelSpec` (Qwen3-VL active)
-- [x] Label Studio import with auto-config + pre-annotations
-- [x] Verified-label pull-back (`from-ls`) and COCO export (`to-coco`)
-- [x] CLI + per-model spike script
-- [x] Local dev infra (docker-compose: LS + image server)
-- [x] RunPod GPU provisioning (manual, via `runpodctl`)
-- [x] Proven end-to-end on real basketball footage (12 frames, 4 games)
-
----
-
-## 7b. Cloud storage layout (codified in `layout.py`)
-
-Dataset-grouped: everything for one labeling effort is self-contained under its
-dataset name, in `ml-cv-data`:
+Dataset-grouped; everything for one labeling effort is self-contained under its
+dataset name in the bucket:
 
 ```
-streams/<game>/<game>_NNN.ts                            # RAW video (StreamScout, untouched)
+streams/<game>/<game>_NNN.ts                         # RAW video (untouched)
 datasets/<dataset>/
-    frames/<game>/<game>_NNN_KKKKK.jpg                  # keyframes
-    labels/<game>/<game>_NNN_KKKKK.json                 # model pre-labels (neutral schema)
-    verified/<game>/<game>_NNN_KKKKK.json               # human-verified (neutral schema)
-    export/<version>/annotations.coco.json              # exports
+    frames/<group>/<stem>.jpg                        # keyframes
+    labels/<group>/<stem>.json                       # model pre-labels (neutral schema)
+    labels-<name>/<group>/<stem>.json                # a 2nd model's pre-labels (namespaced)
+    verified/<group>/<stem>.json                     # human-verified
+    export/<version>/annotations.coco.json           # exports
 ```
 
-A frame, its pre-label, and its verified label share the same filename stem, so
-they join by name across stages — no manifest needed. `NNN` = source chunk,
-`KKKKK` = keyframe index, so any frame traces back to the exact video moment.
+Frame, pre-label, and verified label share the same stem, so they join by name —
+no manifest needed. **`--labels-name`** namespaces a second model's pre-labels
+into `labels-<name>/` so several models coexist without clobbering (e.g.
+LocateAnything in `labels-locateanything/` while Qwen stays in `labels/`).
 
-## 8. Local dev vs production (the real gap)
+Cloud commands (`labeling-t …`): `prelabel-cloud` (presigned frame URL → model →
+labels in S3), `import-ls-cloud` (tasks carry presigned S3 URLs + pre-annotations),
+`from-ls-cloud` (verified labels back to S3), `to-coco`.
 
-The current demo runs **images and Label Studio locally**. That is scaffolding,
-not the intended deployment — and the architecture already separates the two so
-the move is mostly config, not code:
-
-| Concern | Local (now) | Production (intended) |
-|---------|-------------|------------------------|
-| **Frames** | `data/spike_frames/` on disk, served by an nginx sidecar | Live in **S3 / DO Spaces** (`ml-cv-data`). Tasks reference **presigned URLs**. |
-| **Label Studio** | `docker compose` on `localhost:8080` | A **hosted/shared LS** instance. The scripts already take `--url`, so just point elsewhere. |
-| **Model** | Already remote (rented GPU) | Same, or a persistent inference endpoint. |
-| **Image URLs** | `--image-base-url http://localhost:8081` | `--image-base-url` → an S3 public/presigned base, or a small presigned-URL adapter. |
-
-**What this needs to be production-real:**
-1. An **S3 image-ref adapter** — instead of the nginx base URL, generate presigned
-   S3 URLs for each frame (small addition to `_image_ref`). The frames already
-   originate from the bucket, so the source of truth is S3, not local disk.
-2. **Point `import-ls --url` at the hosted Label Studio.** No code change.
-3. Optionally, **frames stay in S3 end-to-end**: read frames from S3 for
-   inference (the model client already takes a URL or bytes), label, push S3 URLs
-   to LS. Nothing is held locally.
-
-In short: nothing about the *labeling logic* assumes local — it's the two infra
-conveniences (nginx, dockerized LS) that are local, and both are swappable.
+> **Concurrency note:** the transformers model-server serves **one model on one
+> GPU** and is *not* safe under concurrent `generate()` (unlike vLLM, which
+> continuous-batches). Use `--concurrency 1` for the transformers backend; vLLM
+> models can fan out.
 
 ---
 
-## 9. Known limitations (v0 scope)
+## 7. Serving infrastructure (RunPod)
 
-- Boxes only. No masks, keypoints, tracking, or video (deferred by design).
-- Single model at a time. Multi-model A/B is a registry addition.
-- Ball recall is weak at 8B / 720p (players + referees are solid). A larger
-  Qwen3-VL or a better prompt would help.
-- GPU provisioning is manual `runpodctl`; no automated up/down module yet.
-- Image serving for LS is local nginx (see section 8).
+`labeling-t-runpod` provisions the GPU. Hardware comes from a `PodSpec` (`gpu.py`:
+rtx3090/4090/5090, a40, a100, h100), the model from a `ModelSpec`. One command
+builds the serving recipe and writes the endpoint to `.env`:
 
----
+- **transformers backend** → our GHCR image (`ghcr.io/qvuer7/labeling-t-models`),
+  `MODEL`/`HF_MODEL` via env, readiness on `/health` (true only after weights load).
+- **vLLM backend** → stock `vllm/vllm-openai`, docker-args from the spec,
+  readiness on `/v1/models`.
+- **hosted backends** (openai/gemini) → no pod; the spec bakes the base URL,
+  `.env` carries only the key.
 
-## 10. Roadmap (v1+)
+**Datacenter auto-targeting:** `up` queries `runpodctl datacenter list`, finds the
+DCs that actually have the requested GPU in stock, and passes `--data-center-ids`
+— so scarce GPUs (e.g. RTX 5090) deploy like the web console instead of blind-
+picking a full machine. `--data-center` forces a list; `datacenters --gpu <preset>`
+inspects stock. Commands: `up / down / status / gpus / datacenters`.
 
-Cloud loop progress:
-- [x] **Storage layer** (`storage.py`) — local + S3/DO Spaces, presigned URLs, ranged dims.
-- [x] **Dataset layout** (`layout.py`) — `datasets/<dataset>/{frames,labels,verified,export}/`.
-- [x] **Video → frames → S3** (`labeling-t frames`) — keyframes to the dataset tree.
-- [x] **Cloud prelabel** (`labeling-t prelabel-cloud`) — presigned frame URL → vLLM (GPU
-      fetches), dims via ranged read, neutral labels written to `datasets/<d>/labels/`.
-- [ ] **Cloud import-ls** — tasks carry presigned S3 URLs; bucket CORS.
-- [ ] **Hosted Label Studio** on a cloud VM (config only; framework takes `--url`).
-
-Beyond the cloud loop:
-- **RunPod auto-provisioning** — done (`labeling-t-runpod`).
-- **SAM2 stage** — boxes from the VLM prompt SAM2 for masks (the two-stage
-  `PreLabeler` design is already in place conceptually).
-- **Tracking** (`track_id` via supervision ByteTrack) + video frame extraction.
-- **Schema extension** to masks/keypoints (recipe already in `schema.py`).
-- **Confidence routing** — auto-accept high-confidence boxes, only send uncertain
-  ones to humans (cuts verification load).
-- **Larger / multiple models** behind the registry.
-- **`job.yaml`** declarative config (replaces ad-hoc CLI args) once jobs recur.
-- **RunPod auto-provisioning** module (up → wire endpoint → run → teardown).
+The **image is one package, scoped deps**: base `import labeling_t` is torch-free;
+the `[models]` extra (torch/transformers/scipy/fastapi/+SAM2/+LocateAnything deps,
+**transformers pinned 4.57.1**) is the only extra installed on the pod. The pod
+fetches `image_url` over HTTP and returns boxes/masks; S3/Label-Studio/COCO live
+on the thin client.
 
 ---
 
-## 11. Quickstart
+## 8. Components (`labeling_t/`)
 
-```bash
-# install (no GPU / torch needed locally)
-uv sync --extra integrations
-
-# run tests
-uv run pytest -q
-
-# --- serve a model on a rented GPU (RunPod) ---
-labeling-t-runpod gpus                     # list GPU presets
-labeling-t-runpod up --model qwen3_vl --gpu rtx4090   # rent + serve + write .env
-#   ... label ...
-labeling-t-runpod down                     # stop billing
-
-# --- label a folder of frames ---
-uv run python scripts/spike.py --model qwen3_vl --images data/spike_frames --out labels
-#   --check  : is the endpoint serving?
-#   --raw    : dump raw model output (for tuning a new model's parser)
-
-# --- human verification round (local dev) ---
-docker compose up -d                       # Label Studio :8080 + image server :8081
-uv run python scripts/ls_setup.py          # -> API token
-labeling-t import-ls --labels labels --api-key <token> \
-    --project basketball-spike --categories player,ball,referee \
-    --image-base-url http://localhost:8081 --image-root data
-
-# --- after correcting boxes in the UI ---
-#   export from LS, then:
-labeling-t from-ls --export export.json --out verified/
-labeling-t to-coco --labels verified/ --out dataset.coco.json
-```
-
-Label Studio UI: http://localhost:8080 (`admin@labeling-t.local` / `labeling-t-admin`).
+| Module | Responsibility |
+|--------|----------------|
+| `schema.py` | The owned contract: `BBox`, `Detection`, `ImageLabels`. Abs-pixel `xyxy`, `extra="forbid"`. |
+| `geometry.py` | All coordinate math: normalized↔abs, abs↔percent (LS), abs→COCO `xywh`. Isolated, heavily tested. |
+| `models.py` | `ModelSpec` registry — model identity + which backend hosts it. WHAT to serve. |
+| `model_client.py` | `ChatClient` (OpenAI-compat: vLLM/OpenAI/Gemini) + `TransformersClient` (`/infer` + `segment`); `client_for`. |
+| `server/` | FastAPI model-server: `app`, `contract` (wire shape), `adapters/{stub,owlv2,locateanything,sam2}`. |
+| `prelabel.py` | `parse_boxes` + batch orchestration (local & cloud), backend-agnostic, resume, failure manifest. |
+| `storage.py` | `Storage`: local + S3 (DO Spaces). presigned URLs, ranged-dim reads. The cloud source/sink. |
+| `layout.py` | `DatasetLayout` — the one definition of the bucket folder structure (+ `--labels-name`). |
+| `frames.py` | Video → keyframes (ffmpeg) → storage. |
+| `gpu.py` / `runpod.py` | GPU presets (WHERE) / RunPod provisioning + datacenter selection. |
+| `adapters/label_studio.py` · `adapters/coco.py` | Neutral ↔ LS (import + pull-back) · neutral → COCO via `supervision`. |
+| `cli.py` · `config.py` · `web/` | CLI entry · `.env` loading · FastAPI browser console over the pipeline. |
 
 ---
 
-## 12. Repo layout
+## 9. Known limitations (current)
 
-```
-src/labeling_t/         # the framework (src-layout, pip-installable)
-  schema.py             # the owned contract
-  geometry.py           # coordinate conversions
-  models.py             # ModelSpec registry (qwen3_vl active) — WHAT to serve
-  gpu.py                # PodSpec GPU presets               — WHERE to serve
-  runpod.py             # provisioning (labeling-t-runpod up/down/status/gpus)
-  model_client.py       # remote vLLM transport
-  prelabel.py           # parse + batch orchestration
-  adapters/
-    label_studio.py     # import + pull-back
-    coco.py             # export via supervision
-  cli.py                # labeling-t entry point
-  config.py             # .env loading
-scripts/                # thin operational entries (not core framework)
-  spike.py              # per-model run / diagnostic
-  ls_setup.py           # enable LS API tokens
-  serve_vllm.sh         # reference GPU serve command
-tests/                  # 66 tests
-docker-compose.yml      # local LS + image server
-nginx/images.conf       # CORS for the image server
-.env / .env.example     # infra config (endpoints/keys) only
+- **Masks aren't persisted in the neutral schema yet** — SAM2 masks flow over the
+  wire and render in the two-stage demo, but `Detection.mask` + COCO segmentation
+  export are still to do (plan.md).
+- **transformers backend is single-request** — one model, one GPU, `--concurrency 1`.
+  No server-side batching/queue yet.
+- **LocateAnything is per-category** (N `generate()`s per frame) — correct labels,
+  but slower than a single multi-category pass.
+- **Image pinned to torch `cu130`** (needs a CUDA-13 host) — narrows GPU
+  availability; a `cu128` build would widen it (plan.md).
+- Single model per pod; multi-model A/B is a registry + second pod.
+- GPU provisioning is `runpodctl` (no API-native module yet).
 
-Console commands (installed): `labeling-t` (prelabel/import-ls/from-ls/to-coco/
-ls-config) and `labeling-t-runpod` (up/down/status/gpus).
-```
+---
+
+## 10. Status snapshot
+
+- [x] Neutral schema + geometry (fully tested)
+- [x] Model registry across 3 backends: `transformers` (OWLv2 / LocateAnything-3B
+      / SAM2), `vllm` (Qwen3-VL), hosted chat (OpenAI / Gemini)
+- [x] Our transformers model-server (one image, `MODEL`-selected adapter, uniform `/infer`)
+- [x] Two-stage detect→segment (detector boxes → SAM2 masks, COCO RLE on the wire)
+- [x] Cloud loop: frames → prelabel-cloud (+ `--labels-name`) → import-ls-cloud → from-ls-cloud → to-coco
+- [x] RunPod provisioning + **datacenter auto-targeting**
+- [x] Label Studio import (auto-config + pre-annotations) and verified pull-back
+- [x] Web console (FastAPI + SPA) over the same pipeline
+- [x] 125 tests passing
+
+Forward plan: see **[plan.md](plan.md)**.
