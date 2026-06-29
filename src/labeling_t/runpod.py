@@ -73,6 +73,37 @@ def _pods(env: dict) -> list[dict]:
     return data or []
 
 
+# Stock labels in `runpodctl datacenter list`, best first. Pods placed by `pod
+# create` without a datacenter hint get blind-placed onto one machine that often
+# can't host the pod (esp. for scarce GPUs in few DCs) -> "no resources"/"no
+# instances". Targeting the DCs that actually report stock is what the web console
+# does for you; we replicate it so `up` finds the GPU the console can see.
+_STOCK_RANK = {"High": 0, "Medium": 1, "Low": 2}
+
+
+def _dcs_for_gpu(datacenters: list[dict], gpu_id: str) -> list[tuple[str, str]]:
+    """Pure: from `runpodctl datacenter list` JSON, the (dc_id, stock) pairs that
+    currently report non-empty stock for `gpu_id`, best-stock first. Pure so the
+    selection logic is unit-tested without hitting RunPod."""
+    out = [
+        (dc["id"], ga["stockStatus"])
+        for dc in datacenters
+        for ga in dc.get("gpuAvailability", [])
+        if ga.get("gpuId") == gpu_id and ga.get("stockStatus")
+    ]
+    return sorted(out, key=lambda ds: _STOCK_RANK.get(ds[1], 3))
+
+
+def _datacenters_with_stock(gpu_id: str, env: dict) -> list[tuple[str, str]]:
+    """(dc_id, stock) pairs that have `gpu_id` in stock now. [] if none or if the
+    query fails (caller then deploys without a DC hint, the old behavior)."""
+    try:
+        data = json.loads(_runpodctl(["datacenter", "list", "-o", "json"], env) or "[]")
+    except SystemExit:
+        return []
+    return _dcs_for_gpu(data if isinstance(data, list) else [], gpu_id)
+
+
 def _docker_args(spec: ModelSpec) -> str:
     if not spec.hf_model:
         raise SystemExit(f"spec {spec.key!r} has no hf_model — can't serve it")
@@ -131,6 +162,7 @@ def start_pod(
     disk: int = 0,
     cloud: str | None = None,
     min_cuda: str | None = None,
+    data_center: str | None = None,
     timeout: int = 900,
     wait: bool = True,
     env: dict | None = None,
@@ -150,6 +182,20 @@ def start_pod(
     name = f"{NAME_PREFIX}-{spec.key.replace('_', '-')}"
     serving = _serving(spec)
     log(f"renting {hw.gpu_id} ({hw.vram_gb or '?'}GB, {cloud}) for {spec.name} [{spec.backend}]")
+    # Pick datacenters that actually have this GPU in stock, so RunPod places the
+    # pod where it CAN run instead of blind-picking a full machine. Explicit
+    # --data-center wins; else auto from `datacenter list`; else (none in stock or
+    # query failed) fall back to no hint, RunPod's old best-effort placement.
+    if data_center:
+        dc_ids = data_center
+        log(f"datacenters: {dc_ids} (forced)")
+    else:
+        avail = _datacenters_with_stock(hw.gpu_id, env)
+        dc_ids = ",".join(d for d, _ in avail)
+        if avail:
+            log(f"datacenters with {hw.gpu_id} in stock: " + ", ".join(f"{d}({s})" for d, s in avail))
+        else:
+            log(f"warning: no datacenter reports {hw.gpu_id} in stock right now — trying anyway")
     cmd = [
         "pod", "create", "--name", name,
         "--gpu-id", hw.gpu_id, "--gpu-count", str(hw.gpu_count),
@@ -158,6 +204,8 @@ def start_pod(
         "--min-cuda-version", min_cuda,
         "--terminate-after", term,
     ]
+    if dc_ids:
+        cmd += ["--data-center-ids", dc_ids]
     if serving["docker_args"]:
         cmd += ["--docker-args", serving["docker_args"]]
     if serving["env"]:               # runpodctl wants env as ONE json object string
@@ -240,7 +288,8 @@ def list_pods_with_balance(env: dict | None = None) -> dict:
 
 def cmd_up(a, env) -> int:
     info = start_pod(a.model, gpu=a.gpu, hours=a.hours, disk=a.disk, cloud=a.cloud,
-                     min_cuda=a.min_cuda, timeout=a.timeout, wait=not a.no_wait, env=env)
+                     min_cuda=a.min_cuda, data_center=a.data_center, timeout=a.timeout,
+                     wait=not a.no_wait, env=env)
     if a.no_wait:
         print(f"not waiting (--no-wait). Check: labeling-t-runpod status  (--model {a.model})")
         return 0
@@ -285,6 +334,18 @@ def cmd_gpus(a, env) -> int:
     return 0
 
 
+def cmd_datacenters(a, env) -> int:
+    gpu_id = get_pod(a.gpu).gpu_id
+    avail = _datacenters_with_stock(gpu_id, env)
+    if not avail:
+        print(f"no datacenter reports {gpu_id} in stock right now")
+        return 1
+    print(f"{gpu_id} in stock at (best first — `up` targets these automatically):")
+    for dc_id, stock in avail:
+        print(f"  {dc_id:12s} {stock}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="labeling-t-runpod",
                                 description="RunPod provisioning for a model's vLLM endpoint")
@@ -297,6 +358,9 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--disk", type=int, default=0, help="override preset container disk GB")
     up.add_argument("--cloud", default=None, help="override preset cloud (SECURE/COMMUNITY)")
     up.add_argument("--min-cuda", default=None, help="override preset min CUDA version")
+    up.add_argument("--data-center", default=None,
+                    help="force datacenter(s), comma-separated (e.g. EU-RO-1). Default: auto-pick "
+                         "DCs that report the GPU in stock (see `datacenters --gpu <preset>`)")
     up.add_argument("--hours", type=float, default=3.0, help="auto-terminate after N hours")
     up.add_argument("--timeout", type=int, default=900, help="readiness wait, seconds")
     up.add_argument("--no-wait", action="store_true")
@@ -311,6 +375,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="balance + running pods").set_defaults(func=cmd_status)
     sub.add_parser("gpus", help="list GPU presets").set_defaults(func=cmd_gpus)
+
+    dc = sub.add_parser("datacenters", help="show which datacenters have a GPU in stock (what `up` auto-targets)")
+    dc.add_argument("--gpu", default=DEFAULT_GPU, help="GPU preset or a raw RunPod gpu-id")
+    dc.set_defaults(func=cmd_datacenters)
     return p
 
 
