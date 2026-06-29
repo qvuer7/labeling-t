@@ -8,6 +8,9 @@ def test_dataset_grouped_paths():
     assert lo.root == "s3://ml-cv-data/datasets/ipbl-basketball"
     assert lo.frames("cats_vs_wolves_02") == "s3://ml-cv-data/datasets/ipbl-basketball/frames/cats_vs_wolves_02"
     assert lo.labels("cats_vs_wolves_02") == "s3://ml-cv-data/datasets/ipbl-basketball/labels/cats_vs_wolves_02"
+    # a named namespace keeps a second model's pre-labels apart from the default
+    assert lo.labels("g", "locateanything") == "s3://ml-cv-data/datasets/ipbl-basketball/labels-locateanything/g"
+    assert lo.labels("g", "") == lo.labels("g")  # empty name == default labels/
     assert lo.verified("g") == "s3://ml-cv-data/datasets/ipbl-basketball/verified/g"
     assert lo.export("v1") == "s3://ml-cv-data/datasets/ipbl-basketball/export/v1"
 

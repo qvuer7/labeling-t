@@ -53,7 +53,7 @@ def _load_labels(labels_dir: str) -> list[ImageLabels]:
 
 
 def _cmd_prelabel(a: argparse.Namespace) -> int:
-    from .model_client import VLLMClient
+    from .model_client import client_for
     from .models import get_spec
     from .prelabel import prelabel
 
@@ -68,7 +68,7 @@ def _cmd_prelabel(a: argparse.Namespace) -> int:
         return 1
     cmap = json.loads(Path(a.category_map).read_text()) if a.category_map else None
     try:
-        client = VLLMClient.from_env(spec, categories=a.categories or None)
+        client = client_for(spec, categories=a.categories or None)
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -104,7 +104,7 @@ def _cmd_import_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - ne
     from .schema import ImageLabels
     from .storage import open_storage
 
-    labels_prefix = DatasetLayout.from_env(a.dataset, base=a.base).labels(a.group)
+    labels_prefix = DatasetLayout.from_env(a.dataset, base=a.base).labels(a.group, a.labels_name)
     storage = open_storage(labels_prefix)
     uris = [u for u in storage.list(labels_prefix + "/") if u.endswith(".json")]
     if not uris:
@@ -225,7 +225,7 @@ def _cmd_ingest_images(a: argparse.Namespace) -> int:
 
 def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - needs vLLM + S3
     from .layout import DatasetLayout
-    from .model_client import VLLMClient
+    from .model_client import client_for
     from .models import get_spec
     from .prelabel import prelabel_cloud
     from .storage import open_storage
@@ -236,7 +236,7 @@ def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - nee
         print(exc, file=sys.stderr)
         return 1
     layout = DatasetLayout.from_env(a.dataset, base=a.base)
-    frames_prefix, labels_prefix = layout.frames(a.group), layout.labels(a.group)
+    frames_prefix, labels_prefix = layout.frames(a.group), layout.labels(a.group, a.labels_name)
     storage = open_storage(frames_prefix)
     frames = [u for u in storage.list(frames_prefix + "/") if u.lower().endswith(_IMAGE_SUFFIXES)]
     if not frames:
@@ -244,7 +244,7 @@ def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - nee
         return 1
     cmap = json.loads(Path(a.category_map).read_text()) if a.category_map else None
     try:
-        client = VLLMClient.from_env(spec, categories=a.categories or None)
+        client = client_for(spec, categories=a.categories or None)
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -313,6 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--dataset", required=True)
     pc.add_argument("--group", required=True)
     pc.add_argument("--model", default="qwen3_vl", help="model spec key")
+    pc.add_argument("--labels-name", default="", help="namespace pre-labels into labels-<name>/ "
+                    "(keeps several models' pre-labels apart; default writes to labels/)")
     pc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     pc.add_argument("--categories", default=None, type=_csv, help="override spec default categories")
     pc.add_argument("--category-map", default=None, help="JSON file: model label -> category")
@@ -324,6 +326,8 @@ def build_parser() -> argparse.ArgumentParser:
     ic = sub.add_parser("import-ls-cloud", help="import a dataset's S3 labels into LS (frames via presigned URLs)")
     ic.add_argument("--dataset", required=True)
     ic.add_argument("--group", required=True)
+    ic.add_argument("--labels-name", default="", help="read pre-labels from labels-<name>/ "
+                    "(match the prelabel-cloud --labels-name; default reads labels/)")
     ic.add_argument("--url", help="hosted Label Studio base URL (default $LS_URL)", **_env_arg("LS_URL"))
     ic.add_argument("--api-key", help="LS API token (default $LS_API_KEY)", **_env_arg("LS_API_KEY"))
     ic.add_argument("--project", required=True)

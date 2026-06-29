@@ -44,8 +44,13 @@ class DatasetLayout:
     def frames(self, group: str = "") -> str:
         return f"{self.root}/frames/{group}".rstrip("/")
 
-    def labels(self, group: str = "") -> str:
-        return f"{self.root}/labels/{group}".rstrip("/")
+    def labels(self, group: str = "", name: str = "") -> str:
+        """Pre-label prefix for `group`. `name` namespaces a non-default model's
+        pre-labels into a sibling dir (labels-<name>/<group>) so several models'
+        pre-labels coexist without clobbering — e.g. name="locateanything" keeps
+        them apart from the default qwen labels/. Empty name = the default labels/."""
+        leaf = f"labels-{name}" if name else "labels"
+        return f"{self.root}/{leaf}/{group}".rstrip("/")
 
     def verified(self, group: str = "") -> str:
         return f"{self.root}/verified/{group}".rstrip("/")
