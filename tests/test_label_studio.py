@@ -42,6 +42,23 @@ def test_polygon_tasks_emit_polygon_regions_from_masks():
         assert 0.0 <= x <= 100.0 and 0.0 <= y <= 100.0
 
 
+def test_brush_config_and_tasks_emit_brush_regions_from_masks():
+    import pytest
+    np = pytest.importorskip("numpy")
+    mu = pytest.importorskip("pycocotools.mask", reason="needs pycocotools")
+    pytest.importorskip("label_studio_sdk.converter.brush", reason="needs label-studio-sdk")
+    assert "<BrushLabels" in generate_label_config(["player"], control="brush")
+    m = np.zeros((500, 1000), np.uint8); m[50:300, 100:600] = 1
+    enc = mu.encode(np.asfortranarray(m))
+    rle = {"size": [500, 1000], "counts": enc["counts"].decode("ascii")}
+    img = ImageLabels(image_path="f.jpg", width=1000, height=500, detections=[
+        Detection(bbox=BBox(x1=100, y1=50, x2=600, y2=300), category="player", mask=rle)])
+    res = to_label_studio_tasks([img], control="brush")[0]["predictions"][0]["result"]
+    assert len(res) == 1 and res[0]["type"] == "brushlabels"
+    assert res[0]["value"]["format"] == "rle" and res[0]["value"]["brushlabels"] == ["player"]
+    assert isinstance(res[0]["value"]["rle"], list) and len(res[0]["value"]["rle"]) > 0
+
+
 def _img():
     return ImageLabels(
         image_path="frame.jpg",

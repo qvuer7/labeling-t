@@ -28,7 +28,7 @@ from ..geometry import abs_to_percent, percent_to_abs, rle_to_polygon
 from ..schema import BBox, Detection, ImageLabels
 
 # LS control tag per annotation kind; `control` selects which one a project uses.
-_CONTROLS = {"rectangle": "RectangleLabels", "polygon": "PolygonLabels"}
+_CONTROLS = {"rectangle": "RectangleLabels", "polygon": "PolygonLabels", "brush": "BrushLabels"}
 
 
 def _image_ref(
@@ -104,10 +104,32 @@ def _polygon_result(det: Detection, width: int, height: int, from_name: str, to_
     }
 
 
+def _brush_result(det: Detection, width: int, height: int, from_name: str, to_name: str) -> dict | None:
+    """A `brushlabels` region from the detection's mask — the raster mask itself,
+    re-encoded into Label Studio's own RLE (NOT COCO RLE). None if no/empty mask.
+    Lazy-imports pycocotools + LS's bundled brush encoder."""
+    if not det.mask:
+        return None
+    import numpy as np
+    from label_studio_sdk.converter import brush
+    from pycocotools import mask as mask_utils
+
+    m = np.ascontiguousarray(mask_utils.decode(det.mask)).astype(np.uint8) * 255
+    if not m.any():
+        return None
+    return {
+        "type": "brushlabels",
+        "from_name": from_name, "to_name": to_name,
+        "original_width": width, "original_height": height, "image_rotation": 0,
+        "value": {"format": "rle", "rle": brush.mask2rle(m), "brushlabels": [det.category]},
+    }
+
+
+_RESULT_FNS = {"polygon": _polygon_result, "brush": _brush_result}
+
+
 def _result_item(det, width, height, from_name, to_name, control: str = "rectangle"):
-    return (_polygon_result if control == "polygon" else _rect_result)(
-        det, width, height, from_name, to_name
-    )
+    return _RESULT_FNS.get(control, _rect_result)(det, width, height, from_name, to_name)
 
 
 def to_label_studio_tasks(
