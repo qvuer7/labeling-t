@@ -42,17 +42,19 @@ def pull_verified(
     api_key: str,
     project_id: int | str,
     base: str | None = None,
+    name: str = "",
     on_progress: Callable[[int, int], None] | None = None,
 ) -> int:
-    """Export verified annotations from LS and write them to `verified/<group>/`.
+    """Export verified annotations from LS and write them to `verified[-name]/<group>/`.
 
     Each saved label's `image_path` is rewritten to the canonical frame URI
     (`frames/<group>/<stem>.jpg`) so verified labels join frames by name,
     regardless of the presigned URL the labeler's browser actually fetched.
-    Returns the number of verified label files written.
+    `name` namespaces a second verified pass (e.g. "masks") apart from the
+    box-verified verified/. Returns the number of verified label files written.
     """
     layout = DatasetLayout.from_env(dataset, base=base)
-    frames_prefix, verified_prefix = layout.frames(group), layout.verified(group)
+    frames_prefix, verified_prefix = layout.frames(group), layout.verified(group, name)
     storage = open_storage(verified_prefix)
 
     labels = from_label_studio(fetch_ls_export(url, api_key, project_id),

@@ -24,7 +24,7 @@ import os
 from typing import Callable
 from xml.sax.saxutils import quoteattr
 
-from ..geometry import abs_to_percent, percent_to_abs, rle_to_polygon
+from ..geometry import abs_to_percent, percent_to_abs, polygon_to_rle, rle_to_polygon
 from ..schema import BBox, Detection, ImageLabels
 
 # LS control tag per annotation kind; `control` selects which one a project uses.
@@ -169,18 +169,70 @@ def to_label_studio_tasks(
     return tasks
 
 
+def _det_from_result(item: dict) -> Detection | None:
+    """One LS result (rectangle / polygon / brush) -> Detection, or None if it
+    isn't a region we recognize / has no label. Polygons & brush strokes recover
+    BOTH a mask (RLE) and the enclosing box; rectangles are box-only."""
+    t = item.get("type")
+    w, h = item["original_width"], item["original_height"]
+    v = item["value"]
+
+    if t == "rectanglelabels":
+        labels = v.get("rectanglelabels") or []
+        if not labels:
+            return None
+        return Detection(bbox=percent_to_abs(v["x"], v["y"], v["width"], v["height"], w, h),
+                         category=labels[0])
+
+    if t == "polygonlabels":
+        labels = v.get("polygonlabels") or []
+        pts = v.get("points") or []
+        if not labels or len(pts) < 3:
+            return None
+        abs_pts = [(min(max(x / 100.0 * w, 0.0), float(w)),
+                    min(max(y / 100.0 * h, 0.0), float(h))) for x, y in pts]
+        xs = [p[0] for p in abs_pts]; ys = [p[1] for p in abs_pts]
+        bbox = BBox(x1=min(xs), y1=min(ys), x2=max(xs), y2=max(ys))
+        return Detection(bbox=bbox, category=labels[0], mask=polygon_to_rle(abs_pts, w, h))
+
+    if t == "brushlabels":
+        labels = v.get("brushlabels") or []
+        if not labels or not v.get("rle"):
+            return None
+        det = _brush_to_detection(v["rle"], labels[0], w, h)
+        return det
+
+    return None
+
+
+def _brush_to_detection(rle: list[int], category: str, w: int, h: int) -> Detection | None:
+    """LS brush RLE -> Detection (mask as COCO RLE + enclosing box). Lazy deps."""
+    import numpy as np
+    from label_studio_sdk.converter import brush
+    from pycocotools import mask as mask_utils
+
+    flat = np.array(brush.decode_rle(rle), dtype=np.uint8)
+    m = (flat.reshape(h, w, 4).max(axis=2) > 127)  # any channel set -> painted
+    ys, xs = np.nonzero(m)
+    if xs.size == 0:
+        return None
+    bbox = BBox(x1=float(xs.min()), y1=float(ys.min()),
+                x2=float(xs.max() + 1), y2=float(ys.max() + 1))
+    enc = mask_utils.encode(np.asfortranarray(m.astype(np.uint8)))
+    coco = {"size": [int(s) for s in enc["size"]], "counts": enc["counts"].decode("ascii")}
+    return Detection(bbox=bbox, category=category, mask=coco)
+
+
 def from_label_studio(
     tasks: list[dict],
     *,
     image_value: str = "image",
     result_source: str = "annotations",
 ) -> list[ImageLabels]:
-    """LS export -> neutral schema. Reads human-verified `annotations` by
-    default (pass result_source="predictions" to read model output instead).
-
-    Each rectanglelabels result carries original_width/height, so dimensions
-    come straight from the export — no separate lookup needed.
-    """
+    """LS export -> neutral schema. Reads human-verified `annotations` by default
+    (pass result_source="predictions" to read model output instead). Handles box,
+    polygon, and brush regions; polygon/brush recover a mask AND a box. Each result
+    carries original_width/height, so dims come straight from the export."""
     out: list[ImageLabels] = []
     for task in tasks:
         image_path = task.get("data", {}).get(image_value)
@@ -188,37 +240,23 @@ def from_label_studio(
             raise ValueError(f"task missing data.{image_value}: {task!r}")
 
         entries = task.get(result_source) or []
-        # Take the first annotation/prediction's result list.
         results = entries[0].get("result", []) if entries else []
 
         width = height = None
         detections: list[Detection] = []
         for item in results:
-            if item.get("type") != "rectanglelabels":
+            if item.get("type") not in ("rectanglelabels", "polygonlabels", "brushlabels"):
                 continue
-            width = item["original_width"]
-            height = item["original_height"]
-            v = item["value"]
-            box: BBox = percent_to_abs(
-                v["x"], v["y"], v["width"], v["height"], width, height
-            )
-            labels = v.get("rectanglelabels") or []
-            if not labels:
-                continue
-            detections.append(Detection(bbox=box, category=labels[0]))
+            width, height = item["original_width"], item["original_height"]
+            det = _det_from_result(item)
+            if det is not None:
+                detections.append(det)
 
         if width is None or height is None:
-            # No boxes verified for this image; we can't recover dims from an
-            # empty result. Skip rather than guess.
+            # Nothing verified for this image; can't recover dims. Skip, don't guess.
             continue
-        out.append(
-            ImageLabels(
-                image_path=image_path,
-                width=width,
-                height=height,
-                detections=detections,
-            )
-        )
+        out.append(ImageLabels(image_path=image_path, width=width, height=height,
+                               detections=detections))
     return out
 
 

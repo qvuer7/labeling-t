@@ -52,8 +52,12 @@ class DatasetLayout:
         leaf = f"labels-{name}" if name else "labels"
         return f"{self.root}/{leaf}/{group}".rstrip("/")
 
-    def verified(self, group: str = "") -> str:
-        return f"{self.root}/verified/{group}".rstrip("/")
+    def verified(self, group: str = "", name: str = "") -> str:
+        """Human-verified prefix for `group`. `name` namespaces a second verified
+        pass into a sibling dir (verified-<name>/<group>) — e.g. name="masks"
+        keeps mask-verified labels apart from the box-verified verified/."""
+        leaf = f"verified-{name}" if name else "verified"
+        return f"{self.root}/{leaf}/{group}".rstrip("/")
 
     def export(self, version: str) -> str:
         return f"{self.root}/export/{version}".rstrip("/")

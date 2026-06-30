@@ -42,6 +42,23 @@ def test_polygon_tasks_emit_polygon_regions_from_masks():
         assert 0.0 <= x <= 100.0 and 0.0 <= y <= 100.0
 
 
+def test_from_ls_reads_polygon_into_box_and_mask():
+    import pytest
+    pytest.importorskip("cv2")
+    pytest.importorskip("pycocotools.mask", reason="needs pycocotools")
+    task = {"data": {"image": "f.jpg"}, "annotations": [{"result": [
+        {"type": "polygonlabels", "original_width": 1000, "original_height": 500,
+         "value": {"points": [[10, 10], [60, 10], [60, 60], [10, 60]],
+                   "polygonlabels": ["player"]}}]}]}
+    out = from_label_studio([task])
+    assert len(out) == 1 and len(out[0].detections) == 1
+    d = out[0].detections[0]
+    assert d.category == "player" and d.mask is not None and d.mask["size"] == [500, 1000]
+    # box from polygon extent: x 10..60% of 1000 -> 100..600, y 10..60% of 500 -> 50..300
+    assert abs(d.bbox.x1 - 100) < 2 and abs(d.bbox.x2 - 600) < 2
+    assert abs(d.bbox.y1 - 50) < 2 and abs(d.bbox.y2 - 300) < 2
+
+
 def test_brush_config_and_tasks_emit_brush_regions_from_masks():
     import pytest
     np = pytest.importorskip("numpy")

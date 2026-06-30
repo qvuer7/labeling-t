@@ -164,9 +164,9 @@ def _cmd_from_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - need
 
     n = pull_verified(
         a.dataset, a.group, url=a.url, api_key=a.api_key,
-        project_id=a.project_id, base=a.base,
+        project_id=a.project_id, base=a.base, name=a.name,
     )
-    verified_prefix = DatasetLayout.from_env(a.dataset, base=a.base).verified(a.group)
+    verified_prefix = DatasetLayout.from_env(a.dataset, base=a.base).verified(a.group, a.name)
     print(f"pulled {n} verified labels -> {verified_prefix}")
     _refresh_manifest(a.dataset, a.base)
     return 0
@@ -347,6 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
     fc.add_argument("--url", help="hosted Label Studio base URL (default $LS_URL)", **_env_arg("LS_URL"))
     fc.add_argument("--api-key", help="LS API token (default $LS_API_KEY)", **_env_arg("LS_API_KEY"))
     fc.add_argument("--project-id", required=True, help="LS project id (from import-ls-cloud output)")
+    fc.add_argument("--name", default="", help="namespace the verified output into verified-<name>/ "
+                    "(e.g. masks), to not overwrite the box-verified verified/")
     fc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     fc.set_defaults(func=_cmd_from_ls_cloud)
 

@@ -131,3 +131,19 @@ def rle_to_polygon(rle: dict, *, simplify: float = 0.004) -> list[tuple[float, f
     if len(approx) < 3:
         return None
     return [(float(x), float(y)) for x, y in approx]
+
+
+def polygon_to_rle(points: list[tuple[float, float]], width: int, height: int) -> dict:
+    """Abs-pixel polygon points -> COCO RLE mask (the polygon filled on a WxH
+    canvas). Inverse direction of `rle_to_polygon`, for pulling verified polygons
+    back into the schema. Lazy-imports cv2 + pycocotools."""
+    import cv2
+    import numpy as np
+    from pycocotools import mask as mask_utils
+
+    canvas = np.zeros((height, width), dtype=np.uint8)
+    pts = np.array([[round(x), round(y)] for x, y in points], dtype=np.int32)
+    cv2.fillPoly(canvas, [pts], 1)
+    enc = mask_utils.encode(np.asfortranarray(canvas))
+    return {"size": [int(s) for s in enc["size"]],
+            "counts": enc["counts"].decode("ascii")}
