@@ -182,21 +182,24 @@ def start_pod(
     name = f"{NAME_PREFIX}-{spec.key.replace('_', '-')}"
     serving = _serving(spec)
     log(f"renting {hw.gpu_id} ({hw.vram_gb or '?'}GB, {cloud}) for {spec.name} [{spec.backend}]")
-    # Pick datacenters that actually have this GPU in stock, so RunPod places the
-    # pod where it CAN run instead of blind-picking a full machine. Explicit
-    # --data-center wins; else auto from `datacenter list`; else (none in stock or
-    # query failed) fall back to no hint, RunPod's old best-effort placement.
+    # Candidate datacenters to TRY IN ORDER. runpodctl honors only ONE
+    # --data-center-id per create, so for a scarce GPU we try each stocked DC in
+    # turn until one actually places (Low stock is racy; one DC out != all out).
+    # Explicit --data-center wins; community cloud uses its own host pool (the DC
+    # list is secure-oriented), so it gets no hint.
     if data_center:
-        dc_ids = data_center
-        log(f"datacenters: {dc_ids} (forced)")
-    else:
+        candidates: list[str | None] = [d.strip() for d in data_center.split(",") if d.strip()]
+        log(f"datacenters: {', '.join(c for c in candidates if c)} (forced)")
+    elif cloud.upper() == "SECURE":
         avail = _datacenters_with_stock(hw.gpu_id, env)
-        dc_ids = ",".join(d for d, _ in avail)
+        candidates = [d for d, _ in avail] or [None]
         if avail:
             log(f"datacenters with {hw.gpu_id} in stock: " + ", ".join(f"{d}({s})" for d, s in avail))
         else:
             log(f"warning: no datacenter reports {hw.gpu_id} in stock right now — trying anyway")
-    cmd = [
+    else:
+        candidates = [None]
+    base = [
         "pod", "create", "--name", name,
         "--gpu-id", hw.gpu_id, "--gpu-count", str(hw.gpu_count),
         "--image", serving["image"], "--container-disk-in-gb", str(disk),
@@ -204,15 +207,29 @@ def start_pod(
         "--min-cuda-version", min_cuda,
         "--terminate-after", term,
     ]
-    if dc_ids:
-        cmd += ["--data-center-ids", dc_ids]
     if serving["docker_args"]:
-        cmd += ["--docker-args", serving["docker_args"]]
+        base += ["--docker-args", serving["docker_args"]]
     if serving["env"]:               # runpodctl wants env as ONE json object string
-        cmd += ["--env", json.dumps(serving["env"])]
-    cmd += ["-o", "json"]
-    out = _runpodctl(cmd, env)
-    pod = json.loads(out)
+        base += ["--env", json.dumps(serving["env"])]
+    base += ["-o", "json"]
+
+    pod = None
+    errors: list[str] = []
+    for dc in candidates:
+        cmd = base + (["--data-center-ids", dc] if dc else [])
+        try:
+            pod = json.loads(_runpodctl(cmd, env))
+            if dc:
+                log(f"placed in {dc}")
+            break
+        except SystemExit as exc:     # this DC can't place it — try the next
+            errors.append(f"{dc or 'auto'}: {str(exc).strip().splitlines()[-1]}")
+    if pod is None:
+        raise SystemExit(
+            f"could not place {hw.gpu_id} on any candidate datacenter "
+            f"({cloud}). Tried:\n  " + "\n  ".join(errors)
+            + "\n  (scarce GPU — retry, try --cloud COMMUNITY, or a different --gpu)"
+        )
     pid = pod["id"]
     url = _proxy(pid)
     log(f"created pod {pid}  (${pod.get('costPerHr')}/hr, auto-terminate {term})")
