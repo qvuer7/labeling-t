@@ -14,11 +14,29 @@ from labeling_t.geometry import (
     abs_to_percent,
     normalized_to_abs,
     percent_to_abs,
+    rle_to_polygon,
 )
 from labeling_t.schema import BBox
 
 W, H = 1920, 1080
 EPS = 1e-6
+
+
+def test_rle_to_polygon_traces_mask_outline():
+    pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    mu = pytest.importorskip("pycocotools.mask", reason="needs pycocotools")
+    m = np.zeros((100, 120), dtype=np.uint8)
+    m[20:70, 30:90] = 1  # a 50x60 filled rectangle
+    enc = mu.encode(np.asfortranarray(m))
+    rle = {"size": [int(s) for s in enc["size"]], "counts": enc["counts"].decode("ascii")}
+    poly = rle_to_polygon(rle)
+    assert poly is not None and len(poly) >= 4
+    xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
+    assert min(xs) <= 31 and max(xs) >= 88 and min(ys) <= 21 and max(ys) >= 68
+    # empty mask -> None
+    empty = mu.encode(np.asfortranarray(np.zeros((10, 10), np.uint8)))
+    assert rle_to_polygon({"size": [10, 10], "counts": empty["counts"].decode("ascii")}) is None
 
 
 def approx(a, b):

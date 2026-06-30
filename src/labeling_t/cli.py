@@ -115,6 +115,7 @@ def _cmd_import_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - ne
         images, base_url=a.url, api_key=a.api_key, project_title=a.project,
         categories=a.categories,
         presign=lambda uri: storage.presigned_url(uri, a.ttl),  # frame URI -> presigned URL
+        control="polygon" if a.masks else "rectangle",
     )
     print(f"imported {len(images)} tasks into LS project {project.id} ({a.url})")
     return 0
@@ -332,6 +333,8 @@ def build_parser() -> argparse.ArgumentParser:
     ic.add_argument("--api-key", help="LS API token (default $LS_API_KEY)", **_env_arg("LS_API_KEY"))
     ic.add_argument("--project", required=True)
     ic.add_argument("--categories", required=True, type=_csv)
+    ic.add_argument("--masks", action="store_true",
+                    help="verify SAM2 masks as polygons (PolygonLabels) instead of boxes")
     ic.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     ic.add_argument("--ttl", type=int, default=604800, help="presigned URL lifetime seconds (default 7d)")
     ic.set_defaults(func=_cmd_import_ls_cloud)

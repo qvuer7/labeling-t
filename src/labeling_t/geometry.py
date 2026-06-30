@@ -105,3 +105,29 @@ def abs_to_coco_xywh(box: BBox) -> list[float]:
     """Absolute-pixel BBox -> COCO [x, y, width, height] (top-left + size, abs
     pixels). No image dims needed — COCO uses absolute pixels like we do."""
     return [box.x1, box.y1, box.width, box.height]
+
+
+def rle_to_polygon(rle: dict, *, simplify: float = 0.004) -> list[tuple[float, float]] | None:
+    """COCO RLE mask -> simplified outer-contour polygon, abs-pixel (x, y) points.
+
+    Used to turn SAM2's raster masks into editable polygons (Label Studio verifies
+    polygons far more easily than brush masks, and polygons round-trip to COCO
+    `segmentation`). Returns the largest external contour, Douglas-Peucker-
+    simplified (`simplify` = epsilon as a fraction of the contour perimeter); None
+    for an empty/degenerate mask. Lazy-imports pycocotools + cv2 — only needed when
+    masks are in play, so the base install stays light."""
+    import cv2
+    import numpy as np
+    from pycocotools import mask as mask_utils
+
+    m = np.ascontiguousarray(mask_utils.decode(rle)).astype(np.uint8)
+    if m.sum() == 0:
+        return None
+    contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    c = max(contours, key=cv2.contourArea)
+    approx = cv2.approxPolyDP(c, simplify * cv2.arcLength(c, True), True).reshape(-1, 2)
+    if len(approx) < 3:
+        return None
+    return [(float(x), float(y)) for x, y in approx]

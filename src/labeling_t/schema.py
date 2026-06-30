@@ -94,7 +94,16 @@ class BBox(BaseModel):
 
 
 class Detection(BaseModel):
-    """One detected object: a box, a category, and where it came from."""
+    """One detected object: a box, a category, and where it came from.
+
+    `mask` is the optional segmentation that goes WITH this box — our masks come
+    from box-prompted SAM2 (one mask per box), so they pair naturally on the same
+    Detection rather than living in a separate list. Stored as COCO RLE
+    ({"size": [h, w], "counts": str}); absent for box-only labels. (This is the
+    schema.py extension plan's step done minimally: masks ride on Detection
+    because they're box-derived; a free-standing Mask kind would only be needed
+    for promptless segmentation, which we don't do.)
+    """
 
     model_config = _STRICT
 
@@ -104,6 +113,8 @@ class Detection(BaseModel):
     score: float | None = Field(default=None, ge=0.0, le=1.0)
     # Provenance: which model/run produced this (e.g. "locate-anything-3b").
     source: str | None = None
+    # Optional COCO RLE segmentation for this box (SAM2). None = box-only.
+    mask: dict | None = None
 
 
 class ImageLabels(BaseModel):

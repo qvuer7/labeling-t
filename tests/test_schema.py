@@ -6,6 +6,15 @@ from pydantic import ValidationError
 from labeling_t.schema import BBox, Detection, ImageLabels
 
 
+def test_detection_accepts_optional_mask_rle():
+    rle = {"size": [720, 1280], "counts": "abc123"}
+    d = Detection(bbox=BBox(x1=0, y1=0, x2=10, y2=10), category="player", mask=rle)
+    assert d.mask == rle
+    assert Detection(bbox=BBox(x1=0, y1=0, x2=1, y2=1), category="ball").mask is None
+    img = ImageLabels(image_path="f.jpg", width=20, height=20, detections=[d])
+    assert img.detections[0].mask["size"] == [720, 1280]
+
+
 def test_valid_detection_and_image():
     img = ImageLabels(
         image_path="frame_0001.jpg",

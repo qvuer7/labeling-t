@@ -14,6 +14,34 @@ def approx(a, b):
     return math.isclose(a, b, rel_tol=0, abs_tol=1e-4)
 
 
+def test_polygon_config_uses_polygonlabels():
+    cfg = generate_label_config(["player", "ball"], control="polygon")
+    assert "<PolygonLabels" in cfg and "<RectangleLabels" not in cfg
+    assert '<Label value="player"/>' in cfg
+    # default stays rectangle (boxes)
+    assert "<RectangleLabels" in generate_label_config(["player"])
+
+
+def test_polygon_tasks_emit_polygon_regions_from_masks():
+    import pytest
+    pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    mu = pytest.importorskip("pycocotools.mask", reason="needs pycocotools")
+    m = np.zeros((500, 1000), np.uint8); m[50:300, 100:600] = 1
+    enc = mu.encode(np.asfortranarray(m))
+    rle = {"size": [500, 1000], "counts": enc["counts"].decode("ascii")}
+    img = ImageLabels(image_path="f.jpg", width=1000, height=500, detections=[
+        Detection(bbox=BBox(x1=100, y1=50, x2=600, y2=300), category="player", mask=rle),
+        Detection(bbox=BBox(x1=0, y1=0, x2=10, y2=10), category="ball"),  # no mask -> skipped
+    ])
+    tasks = to_label_studio_tasks([img], control="polygon")
+    results = tasks[0]["predictions"][0]["result"]
+    assert len(results) == 1 and results[0]["type"] == "polygonlabels"
+    assert results[0]["value"]["polygonlabels"] == ["player"]
+    for x, y in results[0]["value"]["points"]:        # percent, in-bounds
+        assert 0.0 <= x <= 100.0 and 0.0 <= y <= 100.0
+
+
 def _img():
     return ImageLabels(
         image_path="frame.jpg",

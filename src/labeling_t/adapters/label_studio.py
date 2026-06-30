@@ -24,8 +24,11 @@ import os
 from typing import Callable
 from xml.sax.saxutils import quoteattr
 
-from ..geometry import abs_to_percent, percent_to_abs
+from ..geometry import abs_to_percent, percent_to_abs, rle_to_polygon
 from ..schema import BBox, Detection, ImageLabels
+
+# LS control tag per annotation kind; `control` selects which one a project uses.
+_CONTROLS = {"rectangle": "RectangleLabels", "polygon": "PolygonLabels"}
 
 
 def _image_ref(
@@ -55,46 +58,56 @@ def generate_label_config(
     from_name: str = "label",
     to_name: str = "image",
     image_value: str = "image",
+    control: str = "rectangle",
 ) -> str:
     """Build the LS labeling-config XML from the category set. Single source of
-    truth: add a category, the config grows; names can never mismatch."""
-    labels = "\n".join(
-        f"    <Label value={quoteattr(c)}/>" for c in categories
-    )
+    truth: add a category, the config grows; names can never mismatch. `control`
+    picks the region kind — "rectangle" (boxes) or "polygon" (verify SAM2 masks)."""
+    tag = _CONTROLS[control]
+    labels = "\n".join(f"    <Label value={quoteattr(c)}/>" for c in categories)
     return (
         "<View>\n"
         f'  <Image name={quoteattr(to_name)} value="${image_value}"/>\n'
-        f"  <RectangleLabels name={quoteattr(from_name)} toName={quoteattr(to_name)}>\n"
+        f"  <{tag} name={quoteattr(from_name)} toName={quoteattr(to_name)}>\n"
         f"{labels}\n"
-        "  </RectangleLabels>\n"
+        f"  </{tag}>\n"
         "</View>\n"
     )
 
 
-def _result_item(
-    det: Detection,
-    width: int,
-    height: int,
-    from_name: str,
-    to_name: str,
-) -> dict:
+def _rect_result(det: Detection, width: int, height: int, from_name: str, to_name: str) -> dict:
     pct = abs_to_percent(det.bbox, width, height)
     return {
         "type": "rectanglelabels",
-        "from_name": from_name,
-        "to_name": to_name,
-        "original_width": width,
-        "original_height": height,
-        "image_rotation": 0,
-        "value": {
-            "rotation": 0,
-            "x": pct["x"],
-            "y": pct["y"],
-            "width": pct["width"],
-            "height": pct["height"],
-            "rectanglelabels": [det.category],
-        },
+        "from_name": from_name, "to_name": to_name,
+        "original_width": width, "original_height": height, "image_rotation": 0,
+        "value": {"rotation": 0, "x": pct["x"], "y": pct["y"],
+                  "width": pct["width"], "height": pct["height"],
+                  "rectanglelabels": [det.category]},
     }
+
+
+def _polygon_result(det: Detection, width: int, height: int, from_name: str, to_name: str) -> dict | None:
+    """A `polygonlabels` region from the detection's mask (RLE -> contour ->
+    percent points). None if the detection has no mask or the mask is empty."""
+    if not det.mask:
+        return None
+    poly = rle_to_polygon(det.mask)
+    if poly is None:
+        return None
+    points = [[x / width * 100.0, y / height * 100.0] for x, y in poly]
+    return {
+        "type": "polygonlabels",
+        "from_name": from_name, "to_name": to_name,
+        "original_width": width, "original_height": height, "image_rotation": 0,
+        "value": {"points": points, "closed": True, "polygonlabels": [det.category]},
+    }
+
+
+def _result_item(det, width, height, from_name, to_name, control: str = "rectangle"):
+    return (_polygon_result if control == "polygon" else _rect_result)(
+        det, width, height, from_name, to_name
+    )
 
 
 def to_label_studio_tasks(
@@ -107,17 +120,19 @@ def to_label_studio_tasks(
     image_base_url: str | None = None,
     image_root: str | None = None,
     presign: Callable[[str], str] | None = None,
+    control: str = "rectangle",
 ) -> list[dict]:
     """neutral schema -> LS tasks with predictions (percent coords).
 
     presign (cloud): a fn turning each frame's storage URI into a URL the
     browser can fetch (presigned S3). image_base_url/image_root: local dev http.
+    control="polygon" emits SAM2 masks as polygon regions (skips maskless dets).
     """
     tasks = []
     for img in images:
         results = [
-            _result_item(d, img.width, img.height, from_name, to_name)
-            for d in img.detections
+            r for d in img.detections
+            if (r := _result_item(d, img.width, img.height, from_name, to_name, control)) is not None
         ]
         scores = [d.score for d in img.detections if d.score is not None]
         prediction: dict = {"model_version": model_version, "result": results}
@@ -199,9 +214,11 @@ def import_to_label_studio(
     image_base_url: str | None = None,
     image_root: str | None = None,
     presign: Callable[[str], str] | None = None,
+    control: str = "rectangle",
 ):  # pragma: no cover - thin I/O wrapper over label-studio-sdk
     """Create an LS project with the generated config and import the tasks +
-    pre-annotations. Returns the created project.
+    pre-annotations. Returns the created project. control="polygon" makes a SAM2
+    mask-verification project (PolygonLabels).
 
     Not unit-tested (needs a live server). The testable logic lives in
     generate_label_config / to_label_studio_tasks above.
@@ -212,7 +229,8 @@ def import_to_label_studio(
     project = client.projects.create(
         title=project_title,
         label_config=generate_label_config(
-            categories, from_name=from_name, to_name=to_name, image_value=image_value
+            categories, from_name=from_name, to_name=to_name,
+            image_value=image_value, control=control,
         ),
     )
     tasks = to_label_studio_tasks(
@@ -224,6 +242,7 @@ def import_to_label_studio(
         image_base_url=image_base_url,
         image_root=image_root,
         presign=presign,
+        control=control,
     )
     client.projects.import_tasks(id=project.id, request=tasks)
     return project
