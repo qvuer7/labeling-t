@@ -90,12 +90,15 @@ def percent_to_abs(
         raise ValueError(f"image dims must be positive, got {width}x{height}")
     x1 = x / 100.0 * width
     y1 = y / 100.0 * height
-    return BBox(
-        x1=x1,
-        y1=y1,
-        x2=x1 + w / 100.0 * width,
-        y2=y1 + h / 100.0 * height,
-    )
+    x2 = x1 + w / 100.0 * width
+    y2 = y1 + h / 100.0 * height
+    # A labeler can draw a box to the exact edge or slightly off-canvas; a box at
+    # 100% also lands a float-epsilon past the bound (e.g. 1280.0000000002).
+    # Clamp to the frame so the pulled-back BBox is always in-bounds.
+    def _clamp(v: float, hi: int) -> float:
+        return max(0.0, min(v, float(hi)))
+    return BBox(x1=_clamp(x1, width), y1=_clamp(y1, height),
+                x2=_clamp(x2, width), y2=_clamp(y2, height))
 
 
 def abs_to_coco_xywh(box: BBox) -> list[float]:

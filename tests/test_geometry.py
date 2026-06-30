@@ -80,6 +80,15 @@ def test_percent_roundtrip_is_identity():
     assert approx(back.x2, box.x2) and approx(back.y2, box.y2)
 
 
+def test_percent_to_abs_clamps_edge_and_offcanvas_boxes():
+    # a box drawn to the exact right/bottom edge (100% w/h from 0) lands a float
+    # epsilon past the bound; an off-canvas drag goes further. Both clamp in-bounds.
+    edge = percent_to_abs(0, 0, 100, 100, 1280, 720)
+    assert (edge.x1, edge.y1, edge.x2, edge.y2) == (0.0, 0.0, 1280.0, 720.0)
+    over = percent_to_abs(95, 90, 20, 20, 1280, 720)   # x2/y2 run past the frame
+    assert over.x2 == 1280.0 and over.y2 == 720.0
+
+
 # --- abs -> COCO xywh ----------------------------------------------------------
 
 def test_abs_to_coco_xywh():
