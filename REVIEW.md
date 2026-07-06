@@ -1,7 +1,7 @@
 # Labeling-T — Architecture & Quality Review
 
 *Reviewed: 2026-07-02, branch `transformers-model-server`, commit `a6dd9cb`, 132 tests passing.*
-*Companion to [doc.md](doc.md) (what exists) and [plan.md](plan.md) (what's next). This file is the
+*Companion to [doc.md](doc.md) (what exists) and [plans/roadmap.md](plans/roadmap.md) (what's next). This file is the
 honest state-of-the-union: what holds, what doesn't, and what to fix in which order.*
 
 Standard applied: **framework code judged strictly; throwaway scripts leniently** (flagged only if
@@ -56,7 +56,7 @@ vocabulary baked into framework defaults**, violating the project's own neutrali
   multiple pods (`AmbiguousPods`); datacenter auto-targeting replicates the web console. Creds
   ride the boto3 default chain and are never printed; `.env` is gitignored; production
   `cloud-init` generates random creds.
-- **Hygiene.** Zero inline TODO/FIXME in `src/` — forward work lives in plan.md. Scripts
+- **Hygiene.** Zero inline TODO/FIXME in `src/` — forward work lives in plans/roadmap.md. Scripts
   self-annotate their disposability ("throwaway, delete after PR-1"). The LS labeling-config XML
   is *generated from the category set* (`label_studio.py:55`), so config and predictions can't
   drift.
@@ -116,7 +116,7 @@ horizontal-extension recipe is good discipline, but prose is not enforcement.
    (`prelabel.py:232,296`). The **default configuration actively drives 8 concurrent requests
    into a non-reentrant GPU server**; safety currently depends on the operator remembering
    `--concurrency 1` (a documented gotcha in CLAUDE.md — i.e., tribal knowledge guarding a
-   correctness invariant). Either the server serializes (plan.md §2 already lists this) or the
+   correctness invariant). Either the server serializes (plans/roadmap.md §2 already lists this) or the
    client should default transformers-backend runs to 1.
 4. **Silent skip in LS pull-back.** `from_label_studio` drops images with zero verified regions
    because dims can't be recovered (`label_studio.py:255-257`). Intentional and documented, but
@@ -185,8 +185,8 @@ clean). The *defaults* are not:
   image, and drags **dead-weight deps** `lmdb`/`decord` (`pyproject.toml:55-56`) that exist only
   to satisfy remote-code imports never exercised at inference. Acceptable cost today; needs an
   exit strategy (drop LocateAnything, or re-vendor against 5.x) before it ages badly.
-- **doc.md / plan.md lag the code.** Both still say masks are *not* persisted in the neutral
-  schema (doc.md §5/§9, plan.md item 1) — but `Detection.mask` shipped (`schema.py:117`, commits
+- **doc.md / plans/roadmap.md lag the code.** Both still say masks are *not* persisted in the neutral
+  schema (doc.md §5/§9, plans/roadmap.md item 1) — but `Detection.mask` shipped (`schema.py:117`, commits
   `33ea14e`/`12860e0`/`a6dd9cb` closed the whole loop). Test counts stale (125 vs 132). For a
   project whose docs are this good, staleness is expensive — readers trust them.
 - **The cloud loop has no e2e test.** `prelabel-cloud` / `import-ls-cloud` / `from-ls-cloud`
@@ -210,7 +210,7 @@ clean). The *defaults* are not:
 1. Add `schema_version` to `ImageLabels` (default `"1"`), write it on every dump, tolerate its
    absence on load (§3). Two lines now vs. migration archaeology later.
 2. Fix the `.jpg` join in `verify.py:65` — carry or discover the real frame extension (§4.1).
-3. Close the concurrency trap (§4.3): serialize `/infer` server-side with a lock (plan.md §2
+3. Close the concurrency trap (§4.3): serialize `/infer` server-side with a lock (plans/roadmap.md §2
    already calls for this) **and/or** make `prelabel` default to concurrency 1 when
    `spec.backend == "transformers"`. Kill the tribal-knowledge dependency.
 4. Neutralize category defaults in `models.py` + web placeholders (§5.1) — require categories
@@ -222,7 +222,7 @@ clean). The *defaults* are not:
 6. `MODELS_IMAGE` env override (`LABELING_T_MODELS_IMAGE`) in `runpod.py:46` (§5.2).
 7. Extract shared helpers: one retry loop in `model_client.py`, one `_fetch_image` (with size
    cap) for server adapters (§6).
-8. Reconcile doc.md §5/§9 and plan.md §1 with shipped mask support; fix test counts (§7).
+8. Reconcile doc.md §5/§9 and plans/roadmap.md §1 with shipped mask support; fix test counts (§7).
 9. Add ruff + a minimal CI workflow (§7); log skipped zero-region images in pull-back (§4.4).
 
 **Later — structural polish**
@@ -231,10 +231,10 @@ clean). The *defaults* are not:
 11. Cloud-loop e2e test over `LocalStorage` + mocked LS (§7).
 12. Extract shared stage orchestration so web handlers call the same functions as CLI commands
     (§6) — `pull_verified` is the template.
-13. transformers-pin exit strategy (§7); already-planned items stay in plan.md (batched `/infer`,
+13. transformers-pin exit strategy (§7); already-planned items stay in plans/roadmap.md (batched `/infer`,
     cu128 image, confidence routing).
 
-Items 3 (server serialization) and 13 overlap plan.md; the rest are new to this review.
+Items 3 (server serialization) and 13 overlap plans/roadmap.md; the rest are new to this review.
 
 ---
 

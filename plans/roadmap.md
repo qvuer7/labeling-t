@@ -23,15 +23,23 @@ is the contract; everything else is a swappable adapter.
 
 ## Next (highest value first)
 
-### 1. Persist masks end-to-end (close the SAM2 loop)
-Masks currently stop at the wire (`WireDetection.mask`). Finish the path:
-- [ ] Add `Detection.mask` (COCO RLE) to the neutral schema (`schema.py` recipe).
-- [ ] `prelabel`/`segment` write masks into `ImageLabels`.
-- [ ] COCO export emits `segmentation` (supervision already carries RLE/polygons).
-- [ ] Label Studio config + import for masks (BrushLabels / polygons) so masks are
-      verifiable, and `from-ls` pulls them back.
-- [ ] A `prelabel-cloud --segment sam2` flag (or a `segment-cloud` command) that
-      chains detector → SAM2 over a whole dataset and writes masked labels.
+### 1. Persist masks end-to-end (close the SAM2 loop) — DONE except COCO export
+- [x] Add `Detection.mask` (COCO RLE) to the neutral schema (`schema.py` recipe).
+- [x] `segment-cloud` chains a label set's boxes → SAM2 over a whole dataset and
+      writes masks in place (`segment.py`; per-detection resume, `--to-name` copies).
+- [x] Label Studio config + import for masks (polygon and brush), pulled back
+      by `from-ls-cloud`.
+- [ ] **COCO export emits `segmentation`** (supervision already carries
+      RLE/polygons) — the remaining gap; `to-coco` is boxes-only and local-only
+      (REVIEW.md §4.2).
+
+### 1b. OCR / region transcription — shipped (2026-07)
+`transcribe[-cloud]`: crop matching regions → hosted VLM (openai_ocr/gemini_ocr
+specs) → `Detection.text`; 429 backoff, `image_detail:low`, per-detection resume.
+Follow-ups when needed:
+- [ ] Label Studio per-region TextArea verification for `Detection.text`.
+- [ ] `from-ls-cloud --include-accepted`: treat viewed-but-unsubmitted LS tasks
+      as verified (pull their predictions) — today only annotated tasks return.
 
 ### 2. Make the transformers backend fast & safe under load
 Today it's `--concurrency 1` (one model, one GPU, not reentrant).

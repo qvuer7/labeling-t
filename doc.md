@@ -4,8 +4,8 @@ Auto-labeling backend: run a vision model over raw images once, get pre-labels,
 verify the uncertain ones by hand, export to a training format. The model carries
 most of the labeling load; a human only corrects.
 
-Status: **v0.x — boxes + masks, images only. Pipeline proven end-to-end on real
-basketball footage. 125 tests passing.**
+Status: **v0.x — boxes + masks + region OCR, images only. Pipeline proven
+end-to-end on real basketball footage. 157 tests passing.**
 
 Scope has grown from "one detector" to **a model registry across three serving
 backends + a two-stage detect→segment pipeline**, but the contract below is
@@ -55,8 +55,15 @@ and not Label Studio's format. That decoupling is the whole point.
 
 Per frame, prelabel: reads dims, runs the model, converts coords to absolute
 pixels, maps model labels → your categories, filters by score, wraps in the
-neutral schema, writes `labels/<frame>.json`. **Two-stage (optional):** a
-detector produces boxes, then SAM2 turns each box into a mask.
+neutral schema, writes `labels/<frame>.json`.
+
+**Enrichment stages (optional)** rewrite an existing label set in place (or to
+a `--to-name` copy), resuming per detection so re-runs are free:
+- `segment-cloud` — a detector's boxes → SAM2 box prompts → `Detection.mask`
+  (COCO RLE), one mask per box (`segment.py`).
+- `transcribe[-cloud]` — crop each matching region → hosted VLM (OpenAI/Gemini)
+  reads it → `Detection.text` (`transcribe.py`). The OCR result stays attached
+  to the region *within the whole frame's* labels; the crop is just transport.
 
 ---
 
@@ -144,10 +151,14 @@ Canonical convention: **absolute-pixel `xyxy`** (aligns with `supervision`, so
 COCO export is near-free). `extra="forbid"` keeps the schema from accumulating
 per-case junk.
 
-**Masks today flow over the wire** (`WireDetection.mask`, COCO RLE) and through
-the two-stage demo, but are **not yet persisted into the neutral `Detection`** —
-adding `Detection.mask` + COCO `segmentation` export is the next schema extension
-(see plan.md). The extension recipe is documented inline in `schema.py`.
+Two horizontal extensions have since landed on `Detection`, both following the
+recipe documented inline in `schema.py` (optional, box-derived fields):
+`mask` (COCO RLE, from box-prompted SAM2) and `text` (region transcription from
+the OCR stage; `None` = never attempted, `""` = attempted, nothing legible).
+`ImageLabels` also carries `schema_version` (default `"1"`; absent in
+pre-versioning files, written on every dump) so on-disk labels self-identify.
+Still open: COCO export emits boxes only — `segmentation` from masks is
+plans/roadmap.md territory.
 
 ---
 
@@ -219,26 +230,30 @@ on the thin client.
 | `model_client.py` | `ChatClient` (OpenAI-compat: vLLM/OpenAI/Gemini) + `TransformersClient` (`/infer` + `segment`); `client_for`. |
 | `server/` | FastAPI model-server: `app`, `contract` (wire shape), `adapters/{stub,owlv2,locateanything,sam2}`. |
 | `prelabel.py` | `parse_boxes` + batch orchestration (local & cloud), backend-agnostic, resume, failure manifest. |
+| `segment.py` | Enrichment: a label set's boxes → SAM2 box prompts → `Detection.mask`, in place. Per-detection resume. |
+| `transcribe.py` | Enrichment: crop matching regions → hosted VLM → `Detection.text` (OCR). Per-detection resume. |
 | `storage.py` | `Storage`: local + S3 (DO Spaces). presigned URLs, ranged-dim reads. The cloud source/sink. |
 | `layout.py` | `DatasetLayout` — the one definition of the bucket folder structure (+ `--labels-name`). |
 | `frames.py` | Video → keyframes (ffmpeg) → storage. |
 | `gpu.py` / `runpod.py` | GPU presets (WHERE) / RunPod provisioning + datacenter selection. |
 | `adapters/label_studio.py` · `adapters/coco.py` | Neutral ↔ LS (import + pull-back) · neutral → COCO via `supervision`. |
 | `cli.py` · `config.py` · `web/` | CLI entry · `.env` loading · FastAPI browser console over the pipeline. |
+| `output.py` | Agent output mode: `--json` on every subcommand of both CLIs — one `{"ok", "result"/"error"}` envelope on stdout, prose to stderr, `ok` ⇔ exit code 0. |
 
 ---
 
 ## 9. Known limitations (current)
 
-- **Masks aren't persisted in the neutral schema yet** — SAM2 masks flow over the
-  wire and render in the two-stage demo, but `Detection.mask` + COCO segmentation
-  export are still to do (plan.md).
+- **COCO export is boxes-only** — `Detection.mask` persists and round-trips
+  through Label Studio, but `to-coco` does not emit `segmentation` yet, and it
+  requires images on local disk (can't read `s3://` label paths). The export
+  stage is the weakest link in the cloud loop (see REVIEW.md §4).
 - **transformers backend is single-request** — one model, one GPU, `--concurrency 1`.
   No server-side batching/queue yet.
 - **LocateAnything is per-category** (N `generate()`s per frame) — correct labels,
   but slower than a single multi-category pass.
 - **Image pinned to torch `cu130`** (needs a CUDA-13 host) — narrows GPU
-  availability; a `cu128` build would widen it (plan.md).
+  availability; a `cu128` build would widen it (plans/roadmap.md).
 - Single model per pod; multi-model A/B is a registry + second pod.
 - GPU provisioning is `runpodctl` (no API-native module yet).
 
@@ -250,11 +265,13 @@ on the thin client.
 - [x] Model registry across 3 backends: `transformers` (OWLv2 / LocateAnything-3B
       / SAM2), `vllm` (Qwen3-VL), hosted chat (OpenAI / Gemini)
 - [x] Our transformers model-server (one image, `MODEL`-selected adapter, uniform `/infer`)
-- [x] Two-stage detect→segment (detector boxes → SAM2 masks, COCO RLE on the wire)
+- [x] Two-stage detect→segment codified: `segment-cloud` (boxes → SAM2 → `Detection.mask`, in place)
+- [x] Region OCR: `transcribe[-cloud]` (crops → hosted VLM → `Detection.text`), 429 backoff, per-detection resume
+- [x] `schema_version` on `ImageLabels` — on-disk labels self-identify
 - [x] Cloud loop: frames → prelabel-cloud (+ `--labels-name`) → import-ls-cloud → from-ls-cloud → to-coco
 - [x] RunPod provisioning + **datacenter auto-targeting**
 - [x] Label Studio import (auto-config + pre-annotations) and verified pull-back
 - [x] Web console (FastAPI + SPA) over the same pipeline
-- [x] 125 tests passing
+- [x] 157 tests passing
 
-Forward plan: see **[plan.md](plan.md)**.
+Forward plan: see **[plans/roadmap.md](plans/roadmap.md)**.
