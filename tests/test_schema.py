@@ -15,6 +15,32 @@ def test_detection_accepts_optional_mask_rle():
     assert img.detections[0].mask["size"] == [720, 1280]
 
 
+def test_detection_accepts_optional_text():
+    d = Detection(bbox=BBox(x1=0, y1=0, x2=10, y2=10), category="score_home", text="87")
+    assert d.text == "87"
+    # None = never transcribed; "" = attempted, nothing legible — both valid.
+    assert Detection(bbox=BBox(x1=0, y1=0, x2=1, y2=1), category="ball").text is None
+    blank = Detection(bbox=BBox(x1=0, y1=0, x2=1, y2=1), category="timer", text="")
+    assert blank.text == ""
+    # round-trips through JSON
+    again = Detection.model_validate_json(d.model_dump_json())
+    assert again.text == "87"
+
+
+def test_schema_version_defaults_and_tolerates_absence():
+    img = ImageLabels(image_path="f.jpg", width=10, height=10)
+    assert img.schema_version == "1"
+    assert '"schema_version":"1"' in img.model_dump_json()
+    # pre-versioning on-disk JSON (no schema_version, no text) must still load
+    legacy = (
+        '{"image_path": "f.jpg", "width": 10, "height": 10, "detections": '
+        '[{"bbox": {"x1": 0, "y1": 0, "x2": 5, "y2": 5}, "category": "player"}]}'
+    )
+    loaded = ImageLabels.model_validate_json(legacy)
+    assert loaded.schema_version == "1"
+    assert loaded.detections[0].text is None
+
+
 def test_valid_detection_and_image():
     img = ImageLabels(
         image_path="frame_0001.jpg",

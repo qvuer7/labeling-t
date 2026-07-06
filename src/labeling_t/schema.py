@@ -103,6 +103,12 @@ class Detection(BaseModel):
     schema.py extension plan's step done minimally: masks ride on Detection
     because they're box-derived; a free-standing Mask kind would only be needed
     for promptless segmentation, which we don't do.)
+
+    `text` follows the same pattern: it is the transcription OF this box — a
+    second-stage OCR pass (transcribe.py) crops the detection and asks a VLM to
+    read it, so the text is box-derived and rides the Detection like a mask does.
+    None = never transcribed; "" = transcribed, nothing legible (the distinction
+    is what lets a resumed run skip already-attempted crops).
     """
 
     model_config = _STRICT
@@ -115,6 +121,9 @@ class Detection(BaseModel):
     source: str | None = None
     # Optional COCO RLE segmentation for this box (SAM2). None = box-only.
     mask: dict | None = None
+    # Optional transcription of this box (second-stage OCR). None = not
+    # attempted; "" = attempted, nothing legible.
+    text: str | None = None
 
 
 class ImageLabels(BaseModel):
@@ -128,6 +137,10 @@ class ImageLabels(BaseModel):
 
     model_config = _STRICT
 
+    # Contract version this file was written under. The pydantic default makes
+    # pre-versioning JSON (which lacks the field) load as "1"; every dump writes
+    # it, so on-disk labels self-identify from here on (REVIEW.md §3).
+    schema_version: str = "1"
     image_path: str = Field(min_length=1)
     width: int = Field(gt=0)
     height: int = Field(gt=0)
