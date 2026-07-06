@@ -49,9 +49,27 @@ def _data_uri(image_path: str | Path) -> str:
     return f"data:{media};base64,{b64}"
 
 
-def _image_url(ref: str | Path) -> str:
+def _data_uri_bytes(data: bytes, media_type: str = "image/png") -> str:
+    b64 = base64.b64encode(data).decode("ascii")
+    return f"data:{media_type};base64,{b64}"
+
+
+def _retry_after_seconds(exc: Exception, *, default: float) -> float:
+    """Seconds to wait after a 429: the server's Retry-After if parseable
+    (clamped to sane bounds), else the caller's default."""
+    header = getattr(getattr(exc, "response", None), "headers", {}).get("retry-after")
+    try:
+        return min(max(float(header), 1.0), 120.0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _image_url(ref: str | Path | bytes) -> str:
     """An http(s) URL (e.g. presigned S3) passes through so the GPU fetches it
-    directly; a local path is base64-inlined."""
+    directly; a local path is base64-inlined; raw bytes (an in-memory crop from
+    transcribe.py) are base64-inlined as PNG."""
+    if isinstance(ref, bytes):
+        return _data_uri_bytes(ref)
     s = str(ref)
     if s.startswith(("http://", "https://")):
         return s
@@ -100,8 +118,11 @@ class ChatClient:
             raise ValueError(f"{spec.env_prefix}_ENDPOINT is not set (.env)")
         return cls(endpoint, spec, api_key=spec.api_key_from_env(), categories=categories, **kw)
 
-    def build_payload(self, image_path: str | Path) -> dict:
+    def build_payload(self, image_path: str | Path | bytes) -> dict:
         prompt = self.spec.prompt.format(categories=", ".join(self.categories))
+        image = {"url": _image_url(image_path)}
+        if self.spec.image_detail:
+            image["detail"] = self.spec.image_detail
         payload = {
             "model": self.spec.name,
             "messages": [
@@ -109,7 +130,7 @@ class ChatClient:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": _image_url(image_path)}},
+                        {"type": "image_url", "image_url": image},
                     ],
                 }
             ],
@@ -121,10 +142,10 @@ class ChatClient:
         payload.update(self.spec.extra_body)
         return payload
 
-    def infer(self, image_path: str | Path) -> str:
-        """Raw assistant text for one image. Retries transient (5xx/network)
-        errors; raises on 4xx and on the final attempt so prelabel can record
-        the failure."""
+    def infer(self, image_path: str | Path | bytes) -> str:
+        """Raw assistant text for one image (path, URL, or in-memory bytes).
+        Retries transient (5xx/network/429-rate-limit) errors; raises on other
+        4xx and on the final attempt so the caller can record the failure."""
         payload = self.build_payload(image_path)
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
@@ -135,10 +156,18 @@ class ChatClient:
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                 last_exc = exc
                 status = getattr(getattr(exc, "response", None), "status_code", 500)
-                if isinstance(exc, httpx.HTTPStatusError) and status < 500:
+                # 429 is transient (rate limit) — back off like a 5xx instead of
+                # failing the frame; hosted APIs hit it under normal fan-out.
+                if isinstance(exc, httpx.HTTPStatusError) and status < 500 and status != 429:
                     raise
                 if attempt < self.max_retries:
-                    time.sleep(0.5 * (attempt + 1))
+                    if status == 429:
+                        # Rate limits are minute-window quotas: a sub-second sleep
+                        # just burns the retry. Honor Retry-After when sent, else
+                        # wait long enough for the window to move.
+                        time.sleep(_retry_after_seconds(exc, default=15.0 * (attempt + 1)))
+                    else:
+                        time.sleep(0.5 * (attempt + 1))
         assert last_exc is not None
         raise last_exc
 

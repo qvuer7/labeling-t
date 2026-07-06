@@ -70,6 +70,94 @@ def test_retries_5xx_then_succeeds(tmp_path):
     assert calls["n"] == 2
 
 
+def test_infer_accepts_raw_bytes_as_png_data_uri():
+    # transcribe.py sends in-memory crops as bytes -> base64 PNG data URI
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return _chat_response("87")
+
+    client = ChatClient("http://gpu:8000", SPEC, transport=httpx.MockTransport(handler))
+    png = b"\x89PNG\r\n\x1a\nfakepixels"
+    assert client.infer(png) == "87"
+    url = captured["body"]["messages"][0]["content"][1]["image_url"]["url"]
+    assert url == "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+def test_retries_429_rate_limit_then_succeeds(tmp_path):
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, text="rate limited")
+        return _chat_response("[]")
+
+    client = ChatClient(
+        "http://gpu:8000", SPEC, max_retries=2, transport=httpx.MockTransport(handler)
+    )
+    assert client.infer(_img(tmp_path)) == "[]"
+    assert calls["n"] == 2
+
+
+def test_429_honors_retry_after_header(tmp_path, monkeypatch):
+    calls = {"n": 0}
+    slept = []
+    monkeypatch.setattr("labeling_t.model_client.time.sleep", slept.append)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, text="rate limited", headers={"retry-after": "7"})
+        return _chat_response("[]")
+
+    client = ChatClient(
+        "http://gpu:8000", SPEC, max_retries=2, transport=httpx.MockTransport(handler)
+    )
+    assert client.infer(_img(tmp_path)) == "[]"
+    assert slept == [7.0]  # server-directed wait, not the sub-second default
+
+
+def test_429_without_header_backs_off_long(tmp_path, monkeypatch):
+    calls = {"n": 0}
+    slept = []
+    monkeypatch.setattr("labeling_t.model_client.time.sleep", slept.append)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, text="rate limited")
+        return _chat_response("[]")
+
+    client = ChatClient(
+        "http://gpu:8000", SPEC, max_retries=2, transport=httpx.MockTransport(handler)
+    )
+    assert client.infer(_img(tmp_path)) == "[]"
+    assert slept and slept[0] >= 10  # a rate-limit window, not a 0.5s blip
+
+
+def test_image_detail_rides_in_image_url(tmp_path):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return _chat_response("87")
+
+    low_spec = ModelSpec(key="t2", name="m", env_prefix="T", prompt="Read.",
+                         image_detail="low")
+    client = ChatClient("http://x", low_spec, transport=httpx.MockTransport(handler))
+    client.infer(b"\x89PNGxx")
+    img = captured["body"]["messages"][0]["content"][1]["image_url"]
+    assert img["detail"] == "low"
+
+    # default spec (no image_detail): the key is absent entirely
+    client2 = ChatClient("http://x", SPEC, transport=httpx.MockTransport(handler))
+    client2.infer(b"\x89PNGxx")
+    img2 = captured["body"]["messages"][0]["content"][1]["image_url"]
+    assert "detail" not in img2
+
+
 def test_does_not_retry_4xx(tmp_path):
     calls = {"n": 0}
 

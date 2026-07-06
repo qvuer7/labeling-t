@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -354,5 +355,5 @@ def prelabel_cloud(
                 on_progress(done, len(frame_uris))
     if fails:
         storage.write_text(f"{out_prefix}/failures.jsonl", "\n".join(fails) + "\n")
-        print(f"{len(fails)} frames failed -> {out_prefix}/failures.jsonl")
+        print(f"{len(fails)} frames failed -> {out_prefix}/failures.jsonl", file=sys.stderr)
     return written
