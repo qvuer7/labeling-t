@@ -260,6 +260,10 @@ def from_label_studio(
     return out
 
 
+# Hosted LS rejects longer project titles with an opaque 400 Validation error.
+_LS_TITLE_MAX = 50
+
+
 def import_to_label_studio(
     images: list[ImageLabels],
     *,
@@ -280,9 +284,16 @@ def import_to_label_studio(
     pre-annotations. Returns the created project. control="polygon" makes a SAM2
     mask-verification project (PolygonLabels).
 
-    Not unit-tested (needs a live server). The testable logic lives in
-    generate_label_config / to_label_studio_tasks above.
+    Raises ValueError on a title over LS's limit (the server 400s with an
+    opaque validation error otherwise). Not unit-tested beyond that (needs a
+    live server). The testable logic lives in generate_label_config /
+    to_label_studio_tasks above.
     """
+    if len(project_title) > _LS_TITLE_MAX:
+        raise ValueError(
+            f"Label Studio project titles max out at {_LS_TITLE_MAX} chars; "
+            f"{project_title!r} is {len(project_title)}"
+        )
     from label_studio_sdk import LabelStudio
 
     client = LabelStudio(base_url=base_url, api_key=api_key)

@@ -188,3 +188,14 @@ def test_full_roundtrip_schema_to_ls_and_back():
     assert approx(ob.x1, bb.x1) and approx(ob.y1, bb.y1)
     assert approx(ob.x2, bb.x2) and approx(ob.y2, bb.y2)
     assert back[0].detections[0].category == "player"
+
+
+def test_import_rejects_overlong_project_title():
+    # hosted LS 400s on titles > 50 chars; we refuse client-side, before any I/O
+    import pytest
+
+    from labeling_t.adapters.label_studio import import_to_label_studio
+
+    with pytest.raises(ValueError, match="50"):
+        import_to_label_studio([], base_url="http://x", api_key="k",
+                               project_title="x" * 51, categories=["player"])

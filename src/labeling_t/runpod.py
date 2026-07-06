@@ -14,6 +14,9 @@ CLI (installed as `labeling-t-runpod`):
 With multiple instances up, `down` (no args) refuses to guess and lists the
 running pods; target one by id or use --all.
 
+Every subcommand takes --json: one machine-readable envelope on stdout, prose
+(including `up` progress narration) to stderr. See output.py.
+
 Hardware comes from a PodSpec (gpu.py), the model from a ModelSpec (models.py).
 
 Auth: RUNPOD_API_KEY from .env if set, else runpodctl's stored login.
@@ -38,6 +41,7 @@ import httpx
 from .config import load_env
 from .gpu import DEFAULT_GPU, GPUS, get_pod
 from .models import ModelSpec, get_spec
+from .output import emit, fail, json_flag, note
 
 IMAGE = "vllm/vllm-openai:latest"   # GPU/disk/cloud/CUDA come from the PodSpec
 # Our transformers model-server image. PUBLIC GHCR on purpose -> RunPod needs no
@@ -304,71 +308,76 @@ def list_pods_with_balance(env: dict | None = None) -> dict:
 
 
 def cmd_up(a, env) -> int:
+    # under --json, start_pod's progress narration must stay off stdout
+    log = (lambda m: print(m, file=sys.stderr)) if a.json else print
     info = start_pod(a.model, gpu=a.gpu, hours=a.hours, disk=a.disk, cloud=a.cloud,
                      min_cuda=a.min_cuda, data_center=a.data_center, timeout=a.timeout,
-                     wait=not a.no_wait, env=env)
+                     wait=not a.no_wait, env=env, log=log)
     if a.no_wait:
-        print(f"not waiting (--no-wait). Check: labeling-t-runpod status  (--model {a.model})")
-        return 0
-    return 0 if info["ready"] else 1
+        note(a, f"not waiting (--no-wait). Check: labeling-t-runpod status  (--model {a.model})")
+        return emit(a, info)
+    if not info["ready"]:
+        return fail(a, "model did not become ready before the timeout "
+                       "(pod is up and billing — check RunPod GUI logs)", result=info)
+    return emit(a, info)
 
 
 def cmd_down(a, env) -> int:
     try:
         deleted = stop_pods(env, pods=a.pods or None, all=a.all)
     except AmbiguousPods as exc:
-        print(f"{len(exc.pods)} {NAME_PREFIX} pods running — pass a pod id, or --all for all of them:",
-              file=sys.stderr)
-        for p in exc.pods:
-            print(f"  {p['id']}  {p.get('name')}  ${p.get('costPerHr')}/hr", file=sys.stderr)
-        return 1
+        lines = [f"{len(exc.pods)} {NAME_PREFIX} pods running — pass a pod id, or --all for all of them:"]
+        lines += [f"  {p['id']}  {p.get('name')}  ${p.get('costPerHr')}/hr" for p in exc.pods]
+        return fail(a, "\n".join(lines),
+                    pods=[{"id": p["id"], "name": p.get("name"), "cost_per_hr": p.get("costPerHr")}
+                          for p in exc.pods])
     except ValueError as exc:
-        print(exc, file=sys.stderr)
-        return 1
+        return fail(a, str(exc))
     if not deleted:
-        print("no matching pods running")
-        return 0
-    for p in deleted:
-        print(f"deleted {p['id']} ({p['name']})")
-    return 0
+        return emit(a, {"deleted": []}, "no matching pods running")
+    return emit(a, {"deleted": deleted},
+                "\n".join(f"deleted {p['id']} ({p['name']})" for p in deleted))
 
 
 def cmd_status(a, env) -> int:
     s = list_pods_with_balance(env)
-    print(f"balance: ${s['balance']:.2f} | spend/hr: ${s['spend_per_hr']}")
+    lines = [f"balance: ${s['balance']:.2f} | spend/hr: ${s['spend_per_hr']}"]
     if not s["pods"]:
-        print("no pods running")
-        return 0
-    for p in s["pods"]:
-        print(f"  {p['id']}  {p['name']}  ${p['cost_per_hr']}/hr  {p['status']}")
-    return 0
+        lines.append("no pods running")
+    else:
+        lines += [f"  {p['id']}  {p['name']}  ${p['cost_per_hr']}/hr  {p['status']}" for p in s["pods"]]
+    return emit(a, s, "\n".join(lines))
 
 
 def cmd_gpus(a, env) -> int:
-    print("GPU presets (use as --gpu <key>, or pass any raw RunPod gpu-id):")
-    for p in GPUS.values():
-        print(f"  {p.key:9s} {p.vram_gb:>3}GB  {p.cloud:<9} {p.gpu_id:<28} {p.note}")
-    return 0
+    from dataclasses import asdict
+
+    lines = ["GPU presets (use as --gpu <key>, or pass any raw RunPod gpu-id):"]
+    lines += [f"  {p.key:9s} {p.vram_gb:>3}GB  {p.cloud:<9} {p.gpu_id:<28} {p.note}"
+              for p in GPUS.values()]
+    return emit(a, {"gpus": [asdict(p) for p in GPUS.values()], "default": DEFAULT_GPU},
+                "\n".join(lines))
 
 
 def cmd_datacenters(a, env) -> int:
     gpu_id = get_pod(a.gpu).gpu_id
     avail = _datacenters_with_stock(gpu_id, env)
     if not avail:
-        print(f"no datacenter reports {gpu_id} in stock right now")
-        return 1
-    print(f"{gpu_id} in stock at (best first — `up` targets these automatically):")
-    for dc_id, stock in avail:
-        print(f"  {dc_id:12s} {stock}")
-    return 0
+        return fail(a, f"no datacenter reports {gpu_id} in stock right now", gpu_id=gpu_id)
+    lines = [f"{gpu_id} in stock at (best first — `up` targets these automatically):"]
+    lines += [f"  {dc_id:12s} {stock}" for dc_id, stock in avail]
+    return emit(a, {"gpu_id": gpu_id,
+                    "datacenters": [{"id": d, "stock": s} for d, s in avail]},
+                "\n".join(lines))
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="labeling-t-runpod",
                                 description="RunPod provisioning for a model's vLLM endpoint")
     sub = p.add_subparsers(dest="cmd", required=True)
+    jf = [json_flag()]  # every subcommand takes --json (envelope on stdout)
 
-    up = sub.add_parser("up", help="rent a GPU and serve the model")
+    up = sub.add_parser("up", help="rent a GPU and serve the model", parents=jf)
     up.add_argument("--model", default="qwen3_vl", help="model spec key (models.py)")
     up.add_argument("--gpu", default=DEFAULT_GPU,
                     help="GPU preset (rtx4090, rtx5090, a40, a100, h100...) or a raw RunPod gpu-id")
@@ -383,17 +392,18 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--no-wait", action="store_true")
     up.set_defaults(func=cmd_up)
 
-    dn = sub.add_parser("down", help="delete a pod by id, or this project's pod (stop billing)")
+    dn = sub.add_parser("down", help="delete a pod by id, or this project's pod (stop billing)", parents=jf)
     dn.add_argument("pods", nargs="*", metavar="POD_ID",
                     help="specific pod id(s) to delete (from `status`); omit to target this project's pod")
     dn.add_argument("--all", action="store_true",
                     help=f"delete ALL {NAME_PREFIX}-* pods (use when several are running)")
     dn.set_defaults(func=cmd_down)
 
-    sub.add_parser("status", help="balance + running pods").set_defaults(func=cmd_status)
-    sub.add_parser("gpus", help="list GPU presets").set_defaults(func=cmd_gpus)
+    sub.add_parser("status", help="balance + running pods", parents=jf).set_defaults(func=cmd_status)
+    sub.add_parser("gpus", help="list GPU presets", parents=jf).set_defaults(func=cmd_gpus)
 
-    dc = sub.add_parser("datacenters", help="show which datacenters have a GPU in stock (what `up` auto-targets)")
+    dc = sub.add_parser("datacenters", help="show which datacenters have a GPU in stock (what `up` auto-targets)",
+                        parents=jf)
     dc.add_argument("--gpu", default=DEFAULT_GPU, help="GPU preset or a raw RunPod gpu-id")
     dc.set_defaults(func=cmd_datacenters)
     return p
@@ -401,7 +411,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
-    return a.func(a, _env())
+    try:
+        return a.func(a, _env())
+    except SystemExit as exc:
+        # runpodctl / provisioning failures raise SystemExit with a message;
+        # under --json that message must still arrive as an ok=false envelope.
+        if getattr(a, "json", False) and isinstance(exc.code, str):
+            return fail(a, exc.code)
+        raise
 
 
 if __name__ == "__main__":

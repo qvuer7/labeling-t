@@ -12,6 +12,7 @@ storage. Idempotent: a chunk whose frames already exist is skipped.
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -52,7 +53,7 @@ def frames_from_videos(
     out_prefix = out_prefix.rstrip("/")
     videos = [u for u in storage.list(video_prefix) if u.lower().endswith(VIDEO_EXTS)]
     if not videos:
-        print(f"no videos under {video_prefix}")
+        print(f"no videos under {video_prefix}", file=sys.stderr)
         return 0
 
     total = 0
@@ -61,7 +62,7 @@ def frames_from_videos(
         if resume:
             existing = storage.list(f"{out_prefix}/{stem}_")
             if existing:
-                print(f"skip {stem} ({len(existing)} frames already exist)")
+                print(f"skip {stem} ({len(existing)} frames already exist)", file=sys.stderr)
                 total += len(existing)
                 continue
         with tempfile.TemporaryDirectory() as td:
@@ -71,6 +72,7 @@ def frames_from_videos(
             kept = keyframes[:: max(1, stride)]
             for i, kf in enumerate(kept):
                 storage.write_bytes(f"{out_prefix}/{stem}_{i:05d}.jpg", Path(kf).read_bytes())
-            print(f"{stem}: {len(keyframes)} keyframes -> kept {len(kept)} -> {out_prefix}/")
+            print(f"{stem}: {len(keyframes)} keyframes -> kept {len(kept)} -> {out_prefix}/",
+                  file=sys.stderr)
             total += len(kept)
     return total
