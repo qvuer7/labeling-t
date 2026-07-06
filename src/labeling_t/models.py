@@ -57,6 +57,10 @@ class ModelSpec:
     # vLLM's repetition_penalty, a provider's response_format, etc. Lives with the
     # model because it's intrinsic to talking to THAT model, not to infra.
     extra_body: dict = field(default_factory=dict)
+    # OpenAI image-detail hint ("low"/"high"; "" = provider default). "low" caps
+    # the image at 512px and slashes image tokens — right for small crops (OCR),
+    # wrong for full frames where boxes need resolution.
+    image_detail: str = ""
     # Serving recipe (used by runpod.py to stand the model up):
     hf_model: str = ""                    # HF repo to serve, e.g. Qwen/Qwen3-VL-8B-Instruct
     serve_args: str = ""                  # extra vllm args (max-model-len, etc.)
@@ -160,6 +164,49 @@ GEMINI_VL = ModelSpec(
     categories=("player", "ball", "referee"),
 )
 
+# --- OCR / transcription (second-stage, transcribe.py) -------------------------
+
+# Read the text out of a cropped region. Task prompt, not a detection prompt: the
+# transcribe stage sends one CROP per call and expects plain text back, so
+# spec.parse (box-typed) is unused on this path — transcribe.clean_text tidies
+# the reply instead. Deliberately brace-free: ChatClient.build_payload runs
+# .format(categories=...) on every prompt, so stray { } would explode.
+_API_OCR_PROMPT = (
+    "Transcribe the text visible in this image exactly as it appears. "
+    "Return ONLY the transcribed text - no explanation, no quotes, no code fences. "
+    "If no text is legible, return an empty string."
+)
+
+# OpenAI hosted OCR. Same endpoint/auth as OPENAI_VL (shared env_prefix -> shared
+# OPENAI_API_KEY); differs only in task prompt + a cheaper model — per-crop OCR is
+# easy, so gpt-4o-mini reads digits at ~1/25th the cost of gpt-4o.
+OPENAI_OCR = ModelSpec(
+    key="openai_ocr",
+    name="gpt-4o-mini",
+    env_prefix="OPENAI",
+    backend="openai",
+    default_endpoint="https://api.openai.com/v1",
+    chat_path="/chat/completions",          # base already ends in /v1
+    prompt=_API_OCR_PROMPT,
+    coord_space="abs",                      # no boxes on this task; kept for consistency
+    # crops are <512px, so "low" loses nothing and cuts image tokens ~3x —
+    # that's 3x the throughput under a TPM rate limit and 1/3 the cost.
+    image_detail="low",
+)
+
+# Gemini hosted OCR via the OpenAI-compat layer — same client, same GEMINI_API_KEY
+# as GEMINI_VL. Flash is plenty for crop transcription and the cheapest option.
+GEMINI_OCR = ModelSpec(
+    key="gemini_ocr",
+    name="gemini-2.5-flash",
+    env_prefix="GEMINI",
+    backend="gemini",
+    default_endpoint="https://generativelanguage.googleapis.com/v1beta/openai",
+    chat_path="/chat/completions",          # base already ends in /v1beta/openai
+    prompt=_API_OCR_PROMPT,
+    coord_space="abs",
+)
+
 # OWLv2 (Google) open-vocab detector, served by OUR transformers model-server
 # (backend="transformers"). The server returns structured detections in ABSOLUTE
 # pixels, so coord_space="abs" and parse is unused on this path (the client builds
@@ -197,6 +244,8 @@ REGISTRY: dict[str, ModelSpec] = {
     OWLV2.key: OWLV2,
     OPENAI_VL.key: OPENAI_VL,
     GEMINI_VL.key: GEMINI_VL,
+    OPENAI_OCR.key: OPENAI_OCR,
+    GEMINI_OCR.key: GEMINI_OCR,
     SAM2.key: SAM2,
 }
 
