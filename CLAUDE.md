@@ -81,15 +81,15 @@ still useful if per-digit-region OCR (Option B) is ever needed. Local data gitig
 `data/` (match_samples = 28 matches × 10 frames + mask JSONs).
 
 ## Local / git
-- On `transformers-model-server` (origin `github.com/qvuer7/labeling-t`). 157 tests pass.
-- **UNCOMMITTED since 2026-07-02**: the whole transcribe/segment feature set (schema text +
-  schema_version, model_client bytes/429/detail, transcribe.py, segment.py, CLI, tests,
-  doc updates) + throwaway scripts. Commit pending user go-ahead.
+- On `transformers-model-server`, **merged to main and pushed 2026-07-06** (fast-forward,
+  both branches at the same commit). 166 tests pass.
+- Next work: the unified agent-interface plan (`plans/agent-interface-plan.md`), PR-1
+  (pod runtime state) onward — PR-0 (commit series) is done.
 - `data/` is gitignored (all the downloaded frames/masks/crops live there).
 
 ## Common commands
 ```bash
-uv run pytest -q                                   # 157 tests
+uv run pytest -q                                   # 166 tests
 labeling-t-runpod datacenters --gpu a40            # check GPU stock
 labeling-t-runpod up --model sam2 --gpu a40        # rent+serve; down <id> to stop billing
 # S3 (aws cli with DO Spaces endpoint):
