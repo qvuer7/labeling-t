@@ -11,6 +11,11 @@ runs the pipeline stages. Architecture: `doc.md`. Current dataset state:
 
 ## Session start (always)
 
+0. Run every command as **`uv run labeling-t …` / `uv run labeling-t-runpod …`
+   from the repo root**. The CLIs are project scripts living in this repo's
+   venv — `uv run` auto-syncs the environment (no separate `uv sync` needed;
+   the first run after a fresh clone just installs for a minute). Bare
+   `labeling-t` works only inside an activated venv.
 1. `labeling-t-runpod status --json` — reconciles pod state: prunes dead pods
    from `.labeling-t/pods.json`, adopts running `labeling-t-*` pods, and shows
    `model` / `endpoint` / `terminate_after` per pod. Run it before assuming
