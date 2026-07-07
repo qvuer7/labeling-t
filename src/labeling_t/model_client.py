@@ -259,6 +259,23 @@ class TransformersClient:
         boxes = [(d["bbox"], d["label"], d.get("score")) for d in data.get("detections", [])]
         return RawInference(boxes=boxes, width=data.get("width"), height=data.get("height"))
 
+    def _prompt_boxes(
+        self,
+        image_path: str | Path,
+        boxes: list[list[float]],
+        labels: list[str] | None,
+        scores: list[float | None] | None,
+    ) -> list[dict]:
+        """Shared box-prompt call for the stage-2 models (SAM2, VitPose): the
+        boxes ride in `params`, the wire shape is otherwise the detector's."""
+        payload = {
+            "image_url": _image_url(image_path),
+            "queries": [],
+            "params": {**self.params, "boxes": boxes,
+                       "labels": labels or [], "scores": scores or []},
+        }
+        return self._post_infer(payload).get("detections", [])
+
     def segment(
         self,
         image_path: str | Path,
@@ -268,16 +285,21 @@ class TransformersClient:
         scores: list[float | None] | None = None,
     ) -> list[dict]:
         """Stage-2 segmentation: send box prompts (a detector's output) and get one
-        masked detection per box back. The segmenter (SAM2) reads the prompts from
-        `params`; the wire shape is otherwise the detector's. Returns the raw
-        detection dicts [{bbox, label, score, mask:RLE}] — masks ride as COCO RLE."""
-        payload = {
-            "image_url": _image_url(image_path),
-            "queries": [],
-            "params": {**self.params, "boxes": boxes,
-                       "labels": labels or [], "scores": scores or []},
-        }
-        return self._post_infer(payload).get("detections", [])
+        masked detection per box back. Returns the raw detection dicts
+        [{bbox, label, score, mask:RLE}] — masks ride as COCO RLE."""
+        return self._prompt_boxes(image_path, boxes, labels, scores)
+
+    def keypoints(
+        self,
+        image_path: str | Path,
+        boxes: list[list[float]],
+        *,
+        labels: list[str] | None = None,
+        scores: list[float | None] | None = None,
+    ) -> list[dict]:
+        """Stage-2 pose: send box prompts and get one keypointed detection per
+        box back: [{bbox, label, score, keypoints:[{x,y,name,score}]}]."""
+        return self._prompt_boxes(image_path, boxes, labels, scores)
 
     def close(self) -> None:
         self._http.close()

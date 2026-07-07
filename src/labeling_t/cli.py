@@ -526,6 +526,47 @@ def _cmd_diff(a: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_keypoints_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - needs model-server + S3
+    from .keypoints import FAILURES_NAME, keypoints_cloud
+    from .layout import DatasetLayout
+    from .model_client import client_for
+    from .models import get_spec
+    from .storage import open_storage
+
+    try:
+        spec = get_spec(a.model)
+    except KeyError as exc:
+        return fail(a, str(exc))
+    if spec.backend != "transformers":
+        return fail(a, f"model {spec.key!r} is not a pose model on our model-server "
+                       "(transformers backend required, e.g. vitpose)")
+    try:
+        stems, _ = _stem_filter(a)
+    except (OSError, ValueError) as exc:
+        return fail(a, str(exc))
+    if stems is not None and not stems:
+        return fail(a, "the requested stem subset is empty (--stems ∩ --stems-file)")
+    layout = DatasetLayout.from_env(a.dataset, base=a.base)
+    labels_prefix = layout.labels(a.group, a.labels_name)
+    to_prefix = layout.labels(a.group, a.to_name) if a.to_name else None
+    storage = open_storage(labels_prefix)
+    try:
+        client = client_for(spec, endpoint=a.endpoint)
+    except ValueError as exc:
+        return fail(a, str(exc))
+    with client:
+        n = keypoints_cloud(
+            labels_prefix, client, storage=storage, categories=a.categories,
+            to_prefix=to_prefix, stems=stems, max_concurrency=a.concurrency,
+            on_progress=progress_reporter(a, "keypoints-cloud"),
+        )
+    out = to_prefix or labels_prefix
+    rc = emit(a, {"keypointed": n, "prefix": out, "failures_file": f"{out}/{FAILURES_NAME}"},
+              f"keypointed {n} label files -> {out}")
+    _refresh_manifest(a.dataset, a.base)
+    return rc
+
+
 def _cmd_render(a: argparse.Namespace) -> int:
     from .render import render_set
 
@@ -652,6 +693,27 @@ def build_parser() -> argparse.ArgumentParser:
     sg.add_argument("--concurrency", type=int, default=1,
                     help="keep 1 for the transformers backend (one GPU, not reentrant)")
     sg.set_defaults(func=_cmd_segment_cloud)
+
+    kp = sub.add_parser("keypoints-cloud",
+                        help="fill Detection.keypoints: send a label set's boxes to the pose model (VitPose)",
+                        parents=jpf)
+    kp.add_argument("--dataset", required=True)
+    kp.add_argument("--group", required=True)
+    kp.add_argument("--model", default="vitpose", help="pose model spec key (transformers backend)")
+    kp.add_argument("--endpoint", default=None,
+                    help="model endpoint URL (default: newest recorded pod for the model)")
+    kp.add_argument("--labels-name", default="", help="read labels from labels-<name>/ (default labels/)")
+    kp.add_argument("--to-name", default=None,
+                    help="write enriched copies to labels-<name>/ instead of rewriting the source in place")
+    kp.add_argument("--categories", default=None, type=_csv,
+                    help="only pose these detection categories (e.g. player; default: all boxes)")
+    kp.add_argument("--stems", default=None, type=_csv,
+                    help="only these label-file stems, comma-separated (sample-first workflow)")
+    kp.add_argument("--stems-file", default=None, help="only stems listed in this file (one per line)")
+    kp.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
+    kp.add_argument("--concurrency", type=int, default=1,
+                    help="keep 1 for the transformers backend (one GPU, not reentrant)")
+    kp.set_defaults(func=_cmd_keypoints_cloud)
 
     tr = sub.add_parser("transcribe", help="OCR: fill Detection.text on matching regions via a hosted VLM",
                         parents=jpf)
