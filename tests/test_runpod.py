@@ -90,6 +90,7 @@ def test_up_records_state_and_never_touches_env_file(monkeypatch, tmp_path, caps
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text("SECRET_KEY=shhh\n")
     monkeypatch.setattr(rp, "_runpodctl", _fake_runpodctl({
+        ("pod", "list"): "[]",
         ("datacenter", "list"): "[]",
         ("pod", "create"): json.dumps({"id": "podX", "costPerHr": 0.39}),
     }))
@@ -110,6 +111,7 @@ def test_up_records_state_and_never_touches_env_file(monkeypatch, tmp_path, caps
 def test_up_marks_ready_in_state_after_health_ok(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(rp, "_runpodctl", _fake_runpodctl({
+        ("pod", "list"): "[]",
         ("datacenter", "list"): "[]",
         ("pod", "create"): json.dumps({"id": "podY", "costPerHr": 0.39}),
     }))
@@ -157,3 +159,78 @@ def test_status_prunes_dead_and_enriches_live(monkeypatch, capsys):
     assert pod["endpoint"] == "https://l1-8000.proxy.runpod.net"
     state = podstate.load_pods()
     assert set(state) == {"l1"}  # dead pruned, live adopted
+
+
+# ---- guardrails: duplicate refusal + --budget ---------------------------------
+
+def test_up_refuses_duplicate_pod_with_recovery_payload(monkeypatch, capsys):
+    monkeypatch.setattr(rp, "_runpodctl", _fake_runpodctl({
+        ("pod", "list"): json.dumps([{"id": "old1", "name": "labeling-t-sam2",
+                                      "costPerHr": 0.4, "desiredStatus": "RUNNING"}]),
+    }))
+    rc = rp.main(["up", "--model", "sam2", "--gpu", "a40", "--json"])
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 1 and envelope["ok"] is False
+    # the agent's correct next move rides in the payload: reuse this endpoint
+    assert envelope["error"]["existing"] == {
+        "id": "old1", "endpoint": "https://old1-8000.proxy.runpod.net", "cost_per_hr": 0.4}
+    assert "--force" in envelope["error"]["message"]
+
+
+def test_up_force_overrides_duplicate_refusal(monkeypatch, capsys):
+    monkeypatch.setattr(rp, "_runpodctl", _fake_runpodctl({
+        ("pod", "list"): json.dumps([{"id": "old1", "name": "labeling-t-sam2",
+                                      "costPerHr": 0.4, "desiredStatus": "RUNNING"}]),
+        ("datacenter", "list"): "[]",
+        ("pod", "create"): json.dumps({"id": "new1", "costPerHr": 0.4}),
+    }))
+    rc = rp.main(["up", "--model", "sam2", "--gpu", "a40", "--force", "--no-wait", "--json"])
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 0 and envelope["result"]["id"] == "new1"
+
+
+def test_up_budget_caps_hours_when_price_is_known(monkeypatch, capsys):
+    monkeypatch.setattr(rp, "_runpodctl", _fake_runpodctl({
+        ("pod", "list"): "[]",
+        # hypothetical future runpodctl that DOES report prices
+        ("gpu", "list"): json.dumps([{"gpuId": "NVIDIA A40", "securePrice": 0.5}]),
+        ("datacenter", "list"): "[]",
+        ("pod", "create"): json.dumps({"id": "p1", "costPerHr": 0.5}),
+    }))
+    rc = rp.main(["up", "--model", "sam2", "--gpu", "a40",
+                  "--hours", "10", "--budget", "1.0", "--no-wait", "--json"])
+    out, err = capsys.readouterr()
+    envelope = json.loads(out)
+    assert rc == 0 and "caps runtime at 2.0h" in err
+    # terminate_after reflects the capped 2h, not the requested 10h
+    from datetime import datetime, timezone
+    term = datetime.strptime(envelope["result"]["terminate_after"],
+                             "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    left = (term - datetime.now(timezone.utc)).total_seconds() / 3600
+    assert 1.9 < left <= 2.01
+
+
+def test_up_over_budget_deletes_pod_and_suggests_hours(monkeypatch, capsys):
+    deleted = []
+
+    def fake(args, env):
+        if args[:2] == ["pod", "delete"]:
+            deleted.append(args[2])
+            return ""
+        return _fake_runpodctl({
+            ("pod", "list"): "[]",
+            ("gpu", "list"): "[]",   # real runpodctl: no prices -> no pre-cap
+            ("datacenter", "list"): "[]",
+            ("pod", "create"): json.dumps({"id": "exp1", "costPerHr": 2.0}),
+        })(args, env)
+
+    monkeypatch.setattr(rp, "_runpodctl", fake)
+    rc = rp.main(["up", "--model", "sam2", "--gpu", "a40",
+                  "--hours", "3", "--budget", "1.0", "--json"])
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 1 and envelope["ok"] is False
+    assert deleted == ["exp1"]                      # billing stopped immediately
+    assert podstate.load_pods() == {}               # never entered usable state
+    assert envelope["error"]["cost_per_hr"] == 2.0
+    assert envelope["error"]["suggested_hours"] == 0.5
+    assert "--hours 0.5" in envelope["error"]["message"]

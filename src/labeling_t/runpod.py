@@ -136,6 +136,52 @@ def _proxy(pod_id: str) -> str:
     return f"https://{pod_id}-8000.proxy.runpod.net"
 
 
+def _gpu_price(gpu_id: str, cloud: str, env: dict) -> float | None:
+    """$/hr for `gpu_id` from `runpodctl gpu list`, when the CLI reports prices.
+    Current runpodctl versions don't (the JSON has no price fields) — then None,
+    and only the post-create costPerHr check guards the budget. Tolerant on
+    purpose: a pricing lookup must never block provisioning."""
+    try:
+        data = json.loads(_runpodctl(["gpu", "list", "-o", "json"], env) or "[]")
+    except (SystemExit, json.JSONDecodeError):
+        return None
+    prefer = ("securePrice", "communityPrice") if cloud.upper() == "SECURE" \
+        else ("communityPrice", "securePrice")
+    for g in data if isinstance(data, list) else []:
+        if g.get("gpuId") == gpu_id:
+            for k in (*prefer, "lowestPrice", "costPerHr"):
+                v = g.get(k)
+                if isinstance(v, (int, float)) and v > 0:
+                    return float(v)
+    return None
+
+
+class DuplicatePod(Exception):
+    """A pod for this model is already running (deterministic name match) and
+    --force wasn't given. Carries the existing pod so the caller can put its
+    endpoint in the error payload — the correct next move is usually to reuse
+    it, not to rent a second GPU."""
+
+    def __init__(self, pod: dict):
+        self.pod = pod
+        super().__init__(f"pod {pod['id']} ({pod.get('name')}) is already running")
+
+
+class OverBudget(Exception):
+    """The created pod's actual $/hr x requested hours exceeds --budget; the pod
+    was already deleted (never recorded, never billing past this check). Carries
+    the numbers so the caller can suggest corrected hours."""
+
+    def __init__(self, *, budget: float, cost_per_hr: float, hours: float, pod_id: str):
+        self.budget, self.cost_per_hr, self.hours, self.pod_id = budget, cost_per_hr, hours, pod_id
+        # floor to 0.1h so the suggestion itself can't exceed the budget
+        self.suggested_hours = int(budget / cost_per_hr * 10) / 10
+        super().__init__(
+            f"deleted pod {pod_id}: ${cost_per_hr}/hr x {hours:g}h = "
+            f"${cost_per_hr * hours:.2f} exceeds --budget ${budget:g}"
+        )
+
+
 class AmbiguousPods(Exception):
     """More than one project pod is running and no target was given — refuse to
     guess which to delete. Carries the candidate pods so callers can list them."""
@@ -156,6 +202,8 @@ def start_pod(
     data_center: str | None = None,
     timeout: int = 900,
     wait: bool = True,
+    force: bool = False,
+    budget: float | None = None,
     env: dict | None = None,
     log: Callable[[str], None] = print,
 ) -> dict:
@@ -163,15 +211,30 @@ def start_pod(
     (never .env — that's secrets). Returns a dict {id, endpoint, cost_per_hr,
     terminate_after, ready, served}. `log` is a progress sink (print for the
     CLI, a Job's log for the web UI). With wait=True it polls the health route
-    until the model serves or `timeout` seconds elapse."""
+    until the model serves or `timeout` seconds elapse.
+
+    Guardrails: raises DuplicatePod when a pod with this model's deterministic
+    name is already running (force=True overrides — deliberate second instance);
+    with `budget` ($, hard cap = $/hr x hours), a known GPU price caps `hours`
+    pre-create, and the created pod's ACTUAL costPerHr is re-checked — over
+    budget means the pod is deleted immediately and OverBudget raised."""
     env = env or _env()
     spec = get_spec(model)
     hw = get_pod(gpu)
     disk = disk or hw.disk_gb
     cloud = cloud or hw.cloud
     min_cuda = min_cuda or hw.min_cuda
-    term = (datetime.now(timezone.utc) + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
     name = f"{NAME_PREFIX}-{spec.key.replace('_', '-')}"
+    if not force:
+        dup = [p for p in _pods(env) if p.get("name") == name]
+        if dup:
+            raise DuplicatePod(dup[0])
+    if budget is not None:
+        price = _gpu_price(hw.gpu_id, cloud, env)
+        if price and price * hours > budget:
+            hours = budget / price
+            log(f"--budget ${budget:g}: ~${price}/hr caps runtime at {hours:.1f}h")
+    term = (datetime.now(timezone.utc) + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
     serving = _serving(spec)
     log(f"renting {hw.gpu_id} ({hw.vram_gb or '?'}GB, {cloud}) for {spec.name} [{spec.backend}]")
     # Candidate datacenters to TRY IN ORDER. runpodctl honors only ONE
@@ -224,6 +287,12 @@ def start_pod(
         )
     pid = pod["id"]
     url = _proxy(pid)
+    cost = pod.get("costPerHr")
+    # The actual price is only known post-create; over budget -> delete NOW,
+    # before the pod is recorded or waited on (it never becomes usable state).
+    if budget is not None and isinstance(cost, (int, float)) and cost * hours > budget:
+        _runpodctl(["pod", "delete", pid], env)
+        raise OverBudget(budget=budget, cost_per_hr=float(cost), hours=hours, pod_id=pid)
     log(f"created pod {pid}  (${pod.get('costPerHr')}/hr, auto-terminate {term})")
     # Record state BEFORE the readiness wait: a timeout (or Ctrl-C) must still
     # leave the billing pod discoverable by `status` / resolvable by inference.
@@ -321,9 +390,21 @@ def list_pods_with_balance(env: dict | None = None) -> dict:
 def cmd_up(a, env) -> int:
     # under --json, start_pod's progress narration must stay off stdout
     log = (lambda m: print(m, file=sys.stderr)) if a.json else print
-    info = start_pod(a.model, gpu=a.gpu, hours=a.hours, disk=a.disk, cloud=a.cloud,
-                     min_cuda=a.min_cuda, data_center=a.data_center, timeout=a.timeout,
-                     wait=not a.no_wait, env=env, log=log)
+    try:
+        info = start_pod(a.model, gpu=a.gpu, hours=a.hours, disk=a.disk, cloud=a.cloud,
+                         min_cuda=a.min_cuda, data_center=a.data_center, timeout=a.timeout,
+                         wait=not a.no_wait, force=a.force, budget=a.budget, env=env, log=log)
+    except DuplicatePod as exc:
+        p = exc.pod
+        return fail(a, f"a {a.model} pod is already running: {p['id']} "
+                       f"(${p.get('costPerHr')}/hr) — reuse its endpoint "
+                       f"{_proxy(p['id'])}, or pass --force for a second instance",
+                    existing={"id": p["id"], "endpoint": _proxy(p["id"]),
+                              "cost_per_hr": p.get("costPerHr")})
+    except OverBudget as exc:
+        return fail(a, f"{exc} — retry with --hours {exc.suggested_hours:g} or a bigger --budget",
+                    budget=exc.budget, cost_per_hr=exc.cost_per_hr,
+                    suggested_hours=exc.suggested_hours)
     if a.no_wait:
         note(a, f"not waiting (--no-wait). Check: labeling-t-runpod status  (--model {a.model})")
         return emit(a, info)
@@ -406,6 +487,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="force datacenter(s), comma-separated (e.g. EU-RO-1). Default: auto-pick "
                          "DCs that report the GPU in stock (see `datacenters --gpu <preset>`)")
     up.add_argument("--hours", type=float, default=3.0, help="auto-terminate after N hours")
+    up.add_argument("--budget", type=float, default=None,
+                    help="hard $ cap for this pod ($/hr x hours); a pod that would exceed it "
+                         "is deleted immediately and the error suggests corrected --hours")
+    up.add_argument("--force", action="store_true",
+                    help="rent a second instance even when a pod for this model is already running")
     up.add_argument("--timeout", type=int, default=900, help="readiness wait, seconds")
     up.add_argument("--no-wait", action="store_true")
     up.set_defaults(func=cmd_up)

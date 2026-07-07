@@ -216,6 +216,13 @@ DCs that actually have the requested GPU in stock, and passes `--data-center-ids
 picking a full machine. `--data-center` forces a list; `datacenters --gpu <preset>`
 inspects stock. Commands: `up / down / status / gpus / datacenters`.
 
+**Guardrails:** `up` refuses to rent when a pod for the same model already runs
+(deterministic name match; the error carries the existing pod's id/endpoint —
+`--force` rents a deliberate second instance). `up --budget <$>` is a hard cost
+cap: a known GPU price caps `--hours` pre-create, and the created pod's actual
+`costPerHr` is re-checked — over budget deletes the pod immediately and the
+error suggests corrected `--hours`.
+
 The **image is one package, scoped deps**: base `import labeling_t` is torch-free;
 the `[models]` extra (torch/transformers/scipy/fastapi/+SAM2/+LocateAnything deps,
 **transformers pinned 4.57.1**) is the only extra installed on the pod. The pod
