@@ -56,6 +56,8 @@ def set_stats(prefix: str, *, storage: Storage) -> dict:
     fully_masked = 0
     attempted = 0
     legible = 0
+    with_keypoints = 0
+    points_total = 0
     for stem, uri in files.items():
         try:
             data = json.loads(storage.read_bytes(uri).decode())
@@ -79,6 +81,9 @@ def set_stats(prefix: str, *, storage: Storage) -> dict:
                 attempted += 1
                 if d.text != "":
                     legible += 1
+            if d.keypoints is not None:  # [] counts: attempted, per the resume contract
+                with_keypoints += 1
+                points_total += len(d.keypoints)
     return {
         "prefix": prefix,
         "files": len(files),
@@ -94,6 +99,11 @@ def set_stats(prefix: str, *, storage: Storage) -> dict:
             "attempted": attempted,
             "legible": legible,
             "coverage": round(attempted / detections, 4) if detections else 0.0,
+        },
+        "keypoints": {
+            "detections_with_keypoints": with_keypoints,
+            "points_total": points_total,
+            "coverage": round(with_keypoints / detections, 4) if detections else 0.0,
         },
         "sources": dict(sorted(sources.items())),
         "schema_versions": dict(sorted(schema_versions.items())),

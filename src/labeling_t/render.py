@@ -51,11 +51,14 @@ def _decode_rle(rle: dict):
                               "counts": counts.encode() if isinstance(counts, str) else counts})
 
 
-def render_labels(labels: ImageLabels, image_bytes: bytes) -> bytes:
+def render_labels(labels: ImageLabels, image_bytes: bytes,
+                  *, skeleton: list[list[str]] | None = None) -> bytes:
     """One frame + its labels -> annotated PNG bytes (pure, no I/O).
 
     Masks first (25%-alpha tint), then box outlines, then a caption of
-    `category [score]` with `Detection.text` on a second line when present."""
+    `category [score]` with `Detection.text` on a second line when present,
+    then keypoints (white-ringed dots; `skeleton` = optional list of
+    [name_a, name_b] edges drawn between named points when both exist)."""
     im = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     for d in labels.detections:
         if d.mask is not None:
@@ -78,6 +81,18 @@ def render_labels(labels: ImageLabels, image_bytes: bytes) -> bytes:
             draw.rectangle(bb, fill=color)
             draw.text((d.bbox.x1, y), line, fill=(0, 0, 0), font=font)
             y = bb[3]
+    for d in labels.detections:
+        if not d.keypoints:
+            continue
+        color = _color(d.category)
+        pts = {k.name: (k.x, k.y) for k in d.keypoints}
+        for a, b in skeleton or []:  # edges under the dots
+            if a in pts and b in pts:
+                draw.line([pts[a], pts[b]], fill=color, width=2)
+        r = 3
+        for k in d.keypoints:
+            draw.ellipse([k.x - r, k.y - r, k.x + r, k.y + r],
+                         fill=color, outline=(255, 255, 255))
     out = io.BytesIO()
     im.save(out, format="PNG")
     return out.getvalue()
@@ -91,6 +106,7 @@ def render_set(
     stems: set[str] | None = None,
     sample: int | None = None,
     seed: int = 0,
+    skeleton: list[list[str]] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict:
     """Render a label set's frames to local PNGs (<out_dir>/<stem>.png).
@@ -114,7 +130,8 @@ def render_set(
     for i, stem in enumerate(selected, 1):
         try:
             labels = ImageLabels.model_validate_json(storage.read_bytes(files[stem]).decode())
-            png = render_labels(labels, storage.read_bytes(labels.image_path))
+            png = render_labels(labels, storage.read_bytes(labels.image_path),
+                                skeleton=skeleton)
             (out / f"{stem}.png").write_bytes(png)
             rendered += 1
         except ImportError:

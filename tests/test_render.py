@@ -125,3 +125,40 @@ def test_cli_render_empty_selection_fails(tmp_path, capsys):
                "--stems", "nope", "--json"])
     envelope = json.loads(capsys.readouterr().out)
     assert rc == 1 and "nothing to render" in envelope["error"]["message"]
+
+
+def test_keypoints_dots_and_skeleton_edges():
+    from labeling_t.schema import Keypoint
+
+    d = Detection(bbox=BBox(x1=10, y1=10, x2=90, y2=90), category="player",
+                  keypoints=[Keypoint(x=30, y=60, name="left_shoulder"),
+                             Keypoint(x=70, y=60, name="right_shoulder")])
+    frame = _frame_bytes()
+    png_plain = render_labels(_labels([d]), frame)
+    assert _px(png_plain, 30, 60) != BG          # dot at the keypoint
+    assert _px(png_plain, 50, 60) == BG          # no edge without a skeleton
+    png_edges = render_labels(_labels([d]), frame,
+                              skeleton=[["left_shoulder", "right_shoulder"],
+                                        ["left_shoulder", "missing_point"]])
+    assert _px(png_edges, 50, 60) != BG          # edge drawn between the dots
+    # the missing_point edge is skipped silently, not an error
+
+
+def test_render_set_passes_skeleton_through(tmp_path):
+    from labeling_t.schema import Keypoint
+    from labeling_t.storage import LocalStorage as LS
+
+    st = LS()
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(_frame_bytes())
+    prefix = str(tmp_path / "labels")
+    img = _labels([Detection(bbox=BBox(x1=10, y1=10, x2=90, y2=90), category="c",
+                             keypoints=[Keypoint(x=20, y=50, name="a"),
+                                        Keypoint(x=80, y=50, name="b")])],
+                  path=str(frame))
+    st.write_text(f"{prefix}/f0.json", img.model_dump_json())
+    res = render_set(prefix, storage=st, out_dir=str(tmp_path / "out"),
+                     skeleton=[["a", "b"]])
+    assert res["rendered"] == 1
+    png = (tmp_path / "out" / "f0.png").read_bytes()
+    assert _px(png, 50, 50) != BG                # the a-b edge crosses the middle

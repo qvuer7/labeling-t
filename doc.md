@@ -223,6 +223,7 @@ default sets).
 
 Cloud commands (`labeling-t …`): `prelabel-cloud` (presigned frame URL → model →
 labels in S3), `import-ls-cloud` (tasks carry presigned S3 URLs + pre-annotations),
+`keypoints-cloud` (boxes → VitPose skeletons on `Detection.keypoints`),
 `from-ls-cloud` (verified labels back to S3; `--include-accepted
 --accepted-from <set>` also pulls viewed-but-unsubmitted tasks by copying their
 source prediction file byte-exact — LS's default export contains ONLY annotated
@@ -285,6 +286,7 @@ on the thin client.
 | `prelabel.py` | `parse_boxes` + batch orchestration (local & cloud), backend-agnostic, resume, failure manifest. |
 | `segment.py` | Enrichment: a label set's boxes → SAM2 box prompts → `Detection.mask`, in place. Per-detection resume. |
 | `transcribe.py` | Enrichment: crop matching regions → hosted VLM → `Detection.text` (OCR). Per-detection resume. |
+| `keypoints.py` | Enrichment: a label set's boxes → VitPose box prompts → `Detection.keypoints` (named points). Per-detection resume. |
 | `storage.py` | `Storage`: local + S3 (DO Spaces). presigned URLs, ranged-dim reads. The cloud source/sink. |
 | `layout.py` | `DatasetLayout` — the one definition of the bucket folder structure (+ `--labels-name`). |
 | `frames.py` | Video → keyframes (ffmpeg) → storage. |

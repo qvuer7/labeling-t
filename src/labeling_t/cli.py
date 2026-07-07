@@ -577,9 +577,16 @@ def _cmd_render(a: argparse.Namespace) -> int:
         return fail(a, str(exc))
     except OSError as exc:
         return fail(a, str(exc))
+    skeleton = None
+    if a.skeleton:
+        try:
+            spec = json.loads(Path(a.skeleton).read_text())
+            skeleton = spec["edges"] if isinstance(spec, dict) else spec
+        except (OSError, ValueError, KeyError) as exc:
+            return fail(a, f"unreadable --skeleton spec {a.skeleton}: {exc}")
     try:
         res = render_set(prefix, storage=storage, out_dir=a.out, stems=stems,
-                         sample=a.sample, seed=a.seed,
+                         sample=a.sample, seed=a.seed, skeleton=skeleton,
                          on_progress=progress_reporter(a, "render"))
     except ImportError as exc:  # missing [integrations] for mask overlays
         return fail(a, str(exc))
@@ -857,6 +864,8 @@ def build_parser() -> argparse.ArgumentParser:
     rd.add_argument("--sample", type=int, default=None,
                     help="render a deterministic random sample of N frames (see --seed)")
     rd.add_argument("--seed", type=int, default=0, help="sampling seed (same seed = same frames)")
+    rd.add_argument("--skeleton", default=None,
+                    help='JSON file of keypoint edges to draw: {"edges": [["left_shoulder","left_elbow"], ...]}')
     rd.set_defaults(func=_cmd_render)
 
     coco = sub.add_parser("to-coco", help="export labels to COCO", parents=jf)

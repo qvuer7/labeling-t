@@ -63,7 +63,8 @@ Provisioning (`labeling-t-runpod`):
 
 Pipeline (`labeling-t`), in lifecycle order:
 `ingest-images` / `frames` → `prelabel-cloud` → `segment-cloud` (boxes→SAM2
-masks) / `transcribe-cloud` (crops→OCR text) → `import-ls-cloud` → human
+masks) / `transcribe-cloud` (crops→OCR text) / `keypoints-cloud` (boxes→VitPose
+skeletons) → `import-ls-cloud` → human
 verification in LS → `from-ls-cloud [--include-accepted --accepted-from <set>]`
 → `to-coco`.
 
@@ -94,7 +95,7 @@ a bucket listing shows: `labels`, `labels-<name>`, `verified`,
   Over-budget pods self-delete and the error suggests corrected `--hours`.
 - `up` refuses a duplicate pod for the same model — reuse
   `error.existing.endpoint`; only `--force` for a deliberate second instance.
-- transformers backend (owlv2, locate_anything, sam2) = **`--concurrency 1`**
+- transformers backend (owlv2, locate_anything, sam2, vitpose) = **`--concurrency 1`**
   (one GPU model, not reentrant). vLLM and hosted APIs fan out fine.
 - Full details + LS/OCR/RunPod gotchas: `references/guardrails.md`.
 

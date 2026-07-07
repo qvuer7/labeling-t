@@ -186,3 +186,21 @@ def test_cli_stats_flat_set_empty_group(tmp_path, capsys):
                "--base", base, "--json"])
     envelope = json.loads(capsys.readouterr().out)
     assert rc == 0 and envelope["result"]["files"] == 1
+
+
+def test_stats_keypoints_block(tmp_path):
+    from labeling_t.schema import Keypoint
+
+    kp = [Keypoint(x=15, y=15, name="nose")]
+    prefix = _seed_set(tmp_path, "labels", {
+        "f1": _img("f1", dets=[
+            Detection(bbox=BBox(x1=10, y1=10, x2=30, y2=40), category="player",
+                      keypoints=kp),
+            Detection(bbox=BBox(x1=50, y1=10, x2=70, y2=40), category="player",
+                      keypoints=[]),           # attempted, none found -> counts
+            Detection(bbox=BBox(x1=80, y1=10, x2=90, y2=40), category="ball"),
+        ]),
+    })
+    s = set_stats(prefix, storage=LocalStorage())
+    assert s["keypoints"] == {"detections_with_keypoints": 2, "points_total": 1,
+                              "coverage": 0.6667}

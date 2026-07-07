@@ -11,7 +11,7 @@ models / LS / COCO are swappable adapters. Branch: **`transformers-model-server`
 ## Models & serving (in code, `models.py` registry)
 Three backends behind one neutral schema:
 - **transformers** (our FastAPI model-server, one GHCR image `ghcr.io/qvuer7/labeling-t-models`,
-  `MODEL` env selects adapter): `owlv2`, `locate_anything`, `sam2`.
+  `MODEL` env selects adapter): `owlv2`, `locate_anything`, `sam2`, `vitpose` (keypoints).
 - **vllm** (stock image): `qwen3_vl`.
 - **hosted chat** (`ChatClient`, no GPU): `openai_vl`, `gemini_vl`.
 Provision GPUs: `labeling-t-runpod up --model <k> --gpu <preset> --hours H --budget $`

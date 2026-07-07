@@ -67,7 +67,9 @@ Today it's `--concurrency 1` (one model, one GPU, not reentrant).
 ## Later
 
 - **Tracking** — `track_id` via `supervision` ByteTrack across video frames.
-- **Schema extension to keypoints** — same recipe as masks.
+- ~~**Schema extension to keypoints**~~ — DONE 2026-07 (plans/keypoints-plan.md K1-K4:
+  `Detection.keypoints`, VitPose adapter, `keypoints-cloud`, stats/render). Remaining:
+  K5 (LS keypoint round-trip — pilot first) and K6 (COCO keypoints, inside the to-coco rework).
 - **Multi-model A/B / ensemble** — registry + second pod; compare or vote.
 - **`job.yaml`** — declarative run config (model, dataset, categories, category
   map, thresholds) to replace ad-hoc CLI args once runs recur.
