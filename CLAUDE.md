@@ -90,8 +90,9 @@ still useful if per-digit-region OCR (Option B) is ever needed. Local data gitig
 `data/` (match_samples = 28 matches × 10 frames + mask JSONs).
 
 ## Local / git
-- On `transformers-model-server`: agent-interface PR-1..8 committed 2026-07-07 (7 commits,
-  a213004..HEAD), NOT yet merged/pushed — pending user's live e2e test. 232 tests pass.
+- On `transformers-model-server`: agent-interface PR-1..8 + skill + bootstrap docs,
+  **merged to main and pushed 2026-07-07** (fast-forward, both branches at f38d79b+).
+  232 tests pass. Live e2e acceptance run still pending (lifecycle.md sequence).
 - `data/` and `.labeling-t/` are gitignored (local frames/masks/crops + pod runtime state).
 
 ## Common commands
