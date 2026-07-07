@@ -195,6 +195,14 @@ lines to stderr in BOTH output modes — `{"event":"progress","stage":…,"done"
 the final item. `--progress-file <path>` additionally rewrites the latest
 event atomically for pollers.
 
+**Visual checkpoint** (`render.py`): `labeling-t render` draws a label set
+onto its frames — box outlines, `category score` captions with `Detection.text`
+as a second line, 25%-alpha mask overlays (pycocotools decode, lazy; box-only
+sets need just the base install) — as local PNGs. `--sample N --seed S` is a
+deterministic subset (same seed, same frames), `--stems` pinpoints; per-stem
+problems land in `failures` without aborting; empty selection fails loudly.
+LOOK at the output after every stage — that's how bad runs get caught early.
+
 **Dataset-state commands** (`labelset.py`, pure over the Storage protocol so a
 local dir and an S3 prefix answer identically): `stats` (files, detections,
 per-category counts, mask/text coverage, sources, schema_version mix — counted

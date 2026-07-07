@@ -516,6 +516,31 @@ def _cmd_diff(a: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_render(a: argparse.Namespace) -> int:
+    from .render import render_set
+
+    try:
+        name, prefix, storage = _resolve_set(a)
+        stems, stem_sources = _stem_filter(a)
+    except ValueError as exc:
+        return fail(a, str(exc))
+    except OSError as exc:
+        return fail(a, str(exc))
+    try:
+        res = render_set(prefix, storage=storage, out_dir=a.out, stems=stems,
+                         sample=a.sample, seed=a.seed,
+                         on_progress=progress_reporter(a, "render"))
+    except ImportError as exc:  # missing [integrations] for mask overlays
+        return fail(a, str(exc))
+    if not res["stems"]:
+        subset = f" matching {' ∩ '.join(stem_sources)}" if stem_sources else ""
+        return fail(a, f"nothing to render: no label files under {prefix}{subset}")
+    res = {"set": name, **res}
+    return emit(a, res,
+                f"rendered {res['rendered']}/{len(res['stems'])} frames -> {res['out']}"
+                + (f" ({len(res['failures'])} failed)" if res["failures"] else ""))
+
+
 def _cmd_to_coco(a: argparse.Namespace) -> int:
     from .adapters.coco import to_coco
 
@@ -744,6 +769,17 @@ def build_parser() -> argparse.ArgumentParser:
     df.add_argument("--b-dir", default=None, help="local dir for side B instead of --b")
     df.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     df.set_defaults(func=_cmd_diff)
+
+    rd = sub.add_parser("render", help="draw a label set (boxes, masks, text) onto its frames -> local PNGs",
+                        parents=jpf)
+    _set_args(rd)
+    rd.add_argument("--out", required=True, help="local output dir for the PNGs")
+    rd.add_argument("--stems", default=None, type=_csv, help="only these stems, comma-separated")
+    rd.add_argument("--stems-file", default=None, help="only stems listed in this file (one per line)")
+    rd.add_argument("--sample", type=int, default=None,
+                    help="render a deterministic random sample of N frames (see --seed)")
+    rd.add_argument("--seed", type=int, default=0, help="sampling seed (same seed = same frames)")
+    rd.set_defaults(func=_cmd_render)
 
     coco = sub.add_parser("to-coco", help="export labels to COCO", parents=jf)
     coco.add_argument("--labels", required=True)
