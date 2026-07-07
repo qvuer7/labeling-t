@@ -135,3 +135,13 @@ def test_zero_dims_raise(fn):
 def test_normalized_to_abs_rejects_bad_scale():
     with pytest.raises(ValueError):
         normalized_to_abs(0, 0, 1, 1, W, H, scale=0)
+
+
+def test_point_percent_roundtrip_and_clamp():
+    from labeling_t.geometry import point_abs_to_percent, point_percent_to_abs
+
+    p = point_abs_to_percent(320.0, 180.0, 1280, 720)
+    assert p == {"x": 25.0, "y": 25.0}
+    assert point_percent_to_abs(p["x"], p["y"], 1280, 720) == (320.0, 180.0)
+    # edge drop lands epsilon past 100% -> clamped into the frame
+    assert point_percent_to_abs(100.0000001, -0.0000001, 1280, 720) == (1280.0, 0.0)

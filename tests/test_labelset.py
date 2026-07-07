@@ -52,7 +52,7 @@ def test_stats_counts_detections_masks_text_sources(tmp_path):
     assert s["masks"] == {"detections_with_mask": 2, "files_fully_masked": 2, "coverage": 0.6667}
     # text resume contract: "" counts as attempted but not legible
     assert s["text"] == {"attempted": 2, "legible": 1, "coverage": 0.6667}
-    assert s["schema_versions"] == {"1": 3}
+    assert s["schema_versions"] == {"2": 3}
 
 
 def test_stats_schema_version_read_from_raw_json_and_unreadable_counted(tmp_path):
@@ -67,7 +67,7 @@ def test_stats_schema_version_read_from_raw_json_and_unreadable_counted(tmp_path
     st.write_text(f"{prefix}/note.jsonl", "{}")  # failure sidecar: invisible
     s = set_stats(prefix, storage=LocalStorage())
     assert s["files"] == 3 and s["unreadable"] == 1
-    assert s["schema_versions"] == {"1": 1, "absent": 1}
+    assert s["schema_versions"] == {"2": 1, "absent": 1}
 
 
 def test_stats_empty_prefix_is_a_query_not_an_error(tmp_path):

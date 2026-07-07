@@ -4,36 +4,17 @@ This is the spine of the whole tool. Models write INTO this; Label Studio,
 COCO, YOLO, FiftyOne all read FROM it via adapters. Nothing downstream is the
 canonical representation; this is.
 
-v0 scope: Detection (bounding boxes) only, images only.
-Deliberately NOT in v0: Mask, Keypoints, Classification, track_id, video. Those
-are real CV label types and will be added when a dataset actually needs them
-(Stage-2 SAM masks, tracking). Defining them now would be building for data that
-doesn't exist yet — the over-generalization this project exists to avoid.
+v0 scoped to Detection (bounding boxes) only, images only. Extensions since:
+masks (2026-07, schema_version 1) and keypoints (2026-07, schema_version 2) —
+both shipped as OPTIONAL FIELDS ON Detection, not as sibling annotation kinds,
+because both are box-DERIVED in this pipeline: masks come from box-prompted
+SAM2, keypoints from top-down pose (a box in, that box's skeleton out). The
+sibling-collection design (COCO/FiftyOne pattern: `masks: list[Mask]`,
+`keypoints: list[Keypoints]` next to `detections`) remains the right move iff
+a PROMPTLESS producer ever lands (bottom-up pose, image-level court corners);
+until such data exists, don't build it.
 
-HORIZONTAL EXTENSION PLAN (do this when the SECOND annotation type lands, not
-before — it's a mechanical, non-breaking refactor):
-
-  1. Extract the metadata shared by every annotation kind into a base, so a new
-     kind (and any future shared field like track_id) is a single-point add:
-
-         class Annotation(BaseModel):     # category / score / source / track_id
-             category: str
-             score: float | None = None
-             source: str | None = None
-         class Detection(Annotation): bbox: BBox
-         class Mask(Annotation):      polygon: list[list[float]]   # or RLE
-         class Keypoints(Annotation): points: list[Keypoint]
-
-  2. Add sibling collections on ImageLabels (COCO/FiftyOne pattern) — new field,
-     new type, nothing existing changes:
-
-         detections: list[Detection] = []
-         masks:      list[Mask]      = []
-         keypoints:  list[Keypoints] = []
-
-  3. Generalize _check_boxes_within_image into a per-kind bounds check.
-
-Until then Detection stays flat: one type, no base, no speculative structure.
+Still deliberately absent: Classification, track_id, video. Same rule.
 
 Coordinate convention (CANONICAL, do not deviate):
 
@@ -93,6 +74,24 @@ class BBox(BaseModel):
         return self.y2 - self.y1
 
 
+class Keypoint(BaseModel):
+    """One named point of a detection's keypoint set, absolute pixels.
+
+    NAMED ("left_knee"), not index-positioned: the file stays self-describing
+    without an external skeleton definition. Adapters map names to COCO's
+    index order at the export boundary, where such conventions belong.
+    `visible` follows COCO's spirit: True = visible (v=2), False = labeled but
+    occluded (v=1), None = unknown/not stated."""
+
+    model_config = _STRICT
+
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    name: str = Field(min_length=1)
+    visible: bool | None = None
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
 class Detection(BaseModel):
     """One detected object: a box, a category, and where it came from.
 
@@ -109,6 +108,11 @@ class Detection(BaseModel):
     read it, so the text is box-derived and rides the Detection like a mask does.
     None = never transcribed; "" = transcribed, nothing legible (the distinction
     is what lets a resumed run skip already-attempted crops).
+
+    `keypoints` completes the trio: the skeleton OF this box, from a top-down
+    pose pass (keypoints.py) that prompts the pose model with this bbox. Same
+    resume contract as text: None = never attempted; [] = attempted, nothing
+    found.
     """
 
     model_config = _STRICT
@@ -124,6 +128,9 @@ class Detection(BaseModel):
     # Optional transcription of this box (second-stage OCR). None = not
     # attempted; "" = attempted, nothing legible.
     text: str | None = None
+    # Optional keypoints of this box (top-down pose). None = not attempted;
+    # [] = attempted, nothing found.
+    keypoints: list[Keypoint] | None = None
 
 
 class ImageLabels(BaseModel):
@@ -137,21 +144,32 @@ class ImageLabels(BaseModel):
 
     model_config = _STRICT
 
-    # Contract version this file was written under. The pydantic default makes
-    # pre-versioning JSON (which lacks the field) load as "1"; every dump writes
-    # it, so on-disk labels self-identify from here on (REVIEW.md §3).
-    schema_version: str = "1"
+    # Contract version this file was written under; every dump writes it.
+    # "2" = Detection.keypoints exists (extra="forbid" means pre-2 readers
+    # reject files that carry keypoints — hence the bump). Loaders accept any
+    # older version; the ON-DISK value is the truth for provenance (stats reads
+    # it from the raw JSON, where a pre-versioning file counts as "absent" —
+    # this pydantic default is only what the CURRENT code writes).
+    schema_version: str = "2"
     image_path: str = Field(min_length=1)
     width: int = Field(gt=0)
     height: int = Field(gt=0)
     detections: list[Detection] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _check_boxes_within_image(self) -> "ImageLabels":
+    def _check_annotations_within_image(self) -> "ImageLabels":
+        """Per-kind bounds check: every coordinate-bearing part of a detection
+        (bbox, keypoints) must sit inside the image."""
         for d in self.detections:
             if d.bbox.x2 > self.width or d.bbox.y2 > self.height:
                 raise ValueError(
                     f"detection bbox {d.bbox.x1, d.bbox.y1, d.bbox.x2, d.bbox.y2} "
                     f"exceeds image bounds {self.width}x{self.height}"
                 )
+            for k in d.keypoints or []:
+                if k.x > self.width or k.y > self.height:
+                    raise ValueError(
+                        f"keypoint {k.name!r} ({k.x}, {k.y}) exceeds image "
+                        f"bounds {self.width}x{self.height}"
+                    )
         return self

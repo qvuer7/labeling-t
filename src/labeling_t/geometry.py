@@ -101,6 +101,23 @@ def percent_to_abs(
                 x2=_clamp(x2, width), y2=_clamp(y2, height))
 
 
+def point_abs_to_percent(x: float, y: float, width: int, height: int) -> dict[str, float]:
+    """Absolute-pixel point -> Label Studio KeyPoint value (x/y as PERCENT of
+    the image dims — same convention as LS rectangles)."""
+    if width <= 0 or height <= 0:
+        raise ValueError(f"image dims must be positive, got {width}x{height}")
+    return {"x": x / width * 100.0, "y": y / height * 100.0}
+
+
+def point_percent_to_abs(x: float, y: float, width: int, height: int) -> tuple[float, float]:
+    """Label Studio percent point (0-100) -> absolute pixels, clamped to the
+    frame (a point dropped on the exact edge lands a float-epsilon past it)."""
+    if width <= 0 or height <= 0:
+        raise ValueError(f"image dims must be positive, got {width}x{height}")
+    return (max(0.0, min(x / 100.0 * width, float(width))),
+            max(0.0, min(y / 100.0 * height, float(height))))
+
+
 def abs_to_coco_xywh(box: BBox) -> list[float]:
     """Absolute-pixel BBox -> COCO [x, y, width, height] (top-left + size, abs
     pixels). No image dims needed — COCO uses absolute pixels like we do."""

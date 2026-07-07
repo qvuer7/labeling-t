@@ -114,7 +114,7 @@ def test_prelabel_then_transcribe_then_to_coco(tmp_path, monkeypatch):
     assert rc == 0
 
     enriched = json.loads(next(iter(sorted(Path(labels_dir).glob("*.json")))).read_text())
-    assert enriched["schema_version"] == "1"
+    assert enriched["schema_version"] == "2"
     assert enriched["detections"][0]["text"] == "42"
 
     # the enriched labels still export

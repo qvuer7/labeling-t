@@ -29,16 +29,18 @@ def test_detection_accepts_optional_text():
 
 def test_schema_version_defaults_and_tolerates_absence():
     img = ImageLabels(image_path="f.jpg", width=10, height=10)
-    assert img.schema_version == "1"
-    assert '"schema_version":"1"' in img.model_dump_json()
-    # pre-versioning on-disk JSON (no schema_version, no text) must still load
+    assert img.schema_version == "2"  # current contract: keypoints exist
+    assert '"schema_version":"2"' in img.model_dump_json()
+    # pre-versioning on-disk JSON (no schema_version, no text) must still load;
+    # the pydantic default only says what CURRENT code writes — on-disk truth
+    # for provenance comes from the raw JSON (labelset.stats counts "absent")
     legacy = (
         '{"image_path": "f.jpg", "width": 10, "height": 10, "detections": '
         '[{"bbox": {"x1": 0, "y1": 0, "x2": 5, "y2": 5}, "category": "player"}]}'
     )
     loaded = ImageLabels.model_validate_json(legacy)
-    assert loaded.schema_version == "1"
     assert loaded.detections[0].text is None
+    assert loaded.detections[0].keypoints is None
 
 
 def test_valid_detection_and_image():
@@ -129,3 +131,53 @@ def test_detection_at_exact_image_edge_allowed():
         detections=[Detection(bbox=BBox(x1=0, y1=0, x2=100, y2=100), category="car")],
     )
     assert img.detections[0].bbox.x2 == 100
+
+
+# ---- keypoints (schema_version 2) ----------------------------------------------
+
+def test_keypoints_ride_on_detection():
+    from labeling_t.schema import Keypoint
+
+    d = Detection(
+        bbox=BBox(x1=10, y1=10, x2=60, y2=90), category="player",
+        keypoints=[Keypoint(x=20, y=30, name="left_knee", visible=True, score=0.9),
+                   Keypoint(x=25, y=15, name="nose")],
+    )
+    img = ImageLabels(image_path="f.jpg", width=100, height=100, detections=[d])
+    again = ImageLabels.model_validate_json(img.model_dump_json())
+    assert again.detections[0].keypoints[0].name == "left_knee"
+    assert again.detections[0].keypoints[1].visible is None  # unknown, not False
+
+
+def test_keypoints_resume_contract_none_vs_empty():
+    d_untried = Detection(bbox=BBox(x1=0, y1=0, x2=5, y2=5), category="c")
+    d_tried = Detection(bbox=BBox(x1=0, y1=0, x2=5, y2=5), category="c", keypoints=[])
+    assert d_untried.keypoints is None and d_tried.keypoints == []
+
+
+def test_keypoint_out_of_bounds_rejected():
+    from labeling_t.schema import Keypoint
+
+    d = Detection(bbox=BBox(x1=0, y1=0, x2=50, y2=50), category="c",
+                  keypoints=[Keypoint(x=200, y=10, name="stray")])
+    with pytest.raises(ValidationError, match="keypoint 'stray'"):
+        ImageLabels(image_path="f.jpg", width=100, height=100, detections=[d])
+
+
+def test_keypoint_rejects_unknown_fields_and_bad_values():
+    from labeling_t.schema import Keypoint
+
+    with pytest.raises(ValidationError):
+        Keypoint(x=1, y=1, name="n", z=3)          # extra="forbid" holds
+    with pytest.raises(ValidationError):
+        Keypoint(x=1, y=1, name="")                # empty name
+    with pytest.raises(ValidationError):
+        Keypoint(x=1, y=1, name="n", score=1.5)    # score bound
+
+
+def test_schema_version_2_written_old_files_still_load():
+    img = ImageLabels(image_path="f.jpg", width=10, height=10)
+    assert '"schema_version":"2"' in img.model_dump_json()
+    # a v1 file (no keypoints anywhere) loads untouched
+    v1 = '{"schema_version":"1","image_path":"f.jpg","width":10,"height":10,"detections":[]}'
+    assert ImageLabels.model_validate_json(v1).schema_version == "1"
