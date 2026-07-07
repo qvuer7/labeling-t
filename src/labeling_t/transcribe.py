@@ -154,6 +154,7 @@ def transcribe_cloud(
     categories: list[str],
     pad: int = 2,
     to_prefix: str | None = None,
+    stems: set[str] | None = None,
     max_concurrency: int = 4,
     resume: bool = True,
     on_progress: Callable[[int, int], None] | None = None,
@@ -165,13 +166,17 @@ def transcribe_cloud(
     The frame comes from each label's `image_path` (the storage URI that
     prelabel_cloud saved) via storage.read_bytes; crops are cut locally and
     sent base64 — the frame is downloaded once per file regardless of region
-    count. Returns the number of label files enriched this run; failures are
-    flushed once to `<out>/transcribe_failures.jsonl`.
+    count. `stems` restricts the run to those file stems (sample-first
+    workflow); None = the whole set. Returns the number of label files
+    enriched this run; failures are flushed once to
+    `<out>/transcribe_failures.jsonl`.
     """
     cats = set(categories)
     src = labels_prefix.rstrip("/")
     out = to_prefix.rstrip("/") if to_prefix else src
     keys = sorted(k for k in storage.list(src + "/") if k.endswith(".json"))
+    if stems is not None:
+        keys = [k for k in keys if k.rsplit("/", 1)[-1][:-5] in stems]
     done_set = set(storage.list(out + "/")) if (resume and to_prefix) else set()
     fails: list[str] = []
     lock = threading.Lock()

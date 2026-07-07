@@ -38,6 +38,12 @@ def _label_files(storage: Storage, prefix: str) -> dict[str, str]:
     }
 
 
+def label_stems(prefix: str, *, storage: Storage) -> set[str]:
+    """The file stems of a label set — the join key across stages (frames,
+    labels, verified share stems). Feeds --frames-from subsetting."""
+    return set(_label_files(storage, prefix))
+
+
 def set_stats(prefix: str, *, storage: Storage) -> dict:
     """Aggregate counts for one label set (see module docstring for semantics)."""
     files = _label_files(storage, prefix)

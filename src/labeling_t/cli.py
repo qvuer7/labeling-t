@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 from .config import load_env
-from .output import emit, fail, json_flag, note
+from .output import emit, fail, json_flag, note, progress_flag, progress_reporter
 from .schema import ImageLabels
 
 _IMAGE_GLOBS = ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.bmp")
@@ -64,6 +64,33 @@ def _ls_project_url(base_url: str, project_id) -> str:
     return f"{base_url.rstrip('/')}/projects/{project_id}"
 
 
+def _stem_filter(a: argparse.Namespace) -> tuple[set[str] | None, list[str]]:
+    """The stem restriction a subsetting run asked for: the INTERSECTION of
+    --stems (CSV), --stems-file (one per line), and --frames-from (the stems of
+    another label set) — whichever are given. (None, []) = no restriction.
+    The second element names the sources for error/prose messages."""
+    sets: list[set[str]] = []
+    sources: list[str] = []
+    if getattr(a, "stems", None):
+        sets.append(set(a.stems))
+        sources.append("--stems")
+    if getattr(a, "stems_file", None):
+        lines = {ln.strip() for ln in Path(a.stems_file).read_text().splitlines() if ln.strip()}
+        sets.append(lines)
+        sources.append("--stems-file")
+    if getattr(a, "frames_from", None):
+        from .labelset import label_stems
+        from .layout import DatasetLayout
+        from .storage import open_storage
+
+        prefix = DatasetLayout.from_env(a.dataset, base=a.base).set_prefix(a.group, a.frames_from)
+        sets.append(label_stems(prefix, storage=open_storage(prefix)))
+        sources.append(f"--frames-from {a.frames_from}")
+    if not sets:
+        return None, []
+    return set.intersection(*sets), sources
+
+
 def _cmd_prelabel(a: argparse.Namespace) -> int:
     from .model_client import client_for
     from .models import get_spec
@@ -86,6 +113,7 @@ def _cmd_prelabel(a: argparse.Namespace) -> int:
             images, client, a.out,
             category_map=cmap, min_score=a.min_score,
             strict_categories=a.strict_categories, max_concurrency=a.concurrency,
+            on_progress=progress_reporter(a, "prelabel"),
         )
     return emit(
         a,
@@ -191,6 +219,7 @@ def _cmd_from_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - need
     n = pull_verified(
         a.dataset, a.group, url=a.url, api_key=a.api_key,
         project_id=a.project_id, base=a.base, name=a.name,
+        on_progress=progress_reporter(a, "from-ls-cloud"),
     )
     verified_prefix = DatasetLayout.from_env(a.dataset, base=a.base).verified(a.group, a.name)
     rc = emit(a, {"pulled": n, "prefix": verified_prefix},
@@ -238,7 +267,8 @@ def _cmd_ingest_images(a: argparse.Namespace) -> int:
     dest = DatasetLayout.from_env(a.dataset, base=a.base).frames(a.group)
     storage = open_storage(dest)
     try:
-        uploaded, total = ingest_images(a.src, dest, storage=storage, max_concurrency=a.concurrency)
+        uploaded, total = ingest_images(a.src, dest, storage=storage, max_concurrency=a.concurrency,
+                                        on_progress=progress_reporter(a, "ingest-images"))
     except (NotADirectoryError, FileNotFoundError) as exc:
         return fail(a, str(exc))
     if total == 0:
@@ -268,6 +298,18 @@ def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - nee
     frames = [u for u in storage.list(frames_prefix + "/") if u.lower().endswith(_IMAGE_SUFFIXES)]
     if not frames:
         return fail(a, f"no frames under {frames_prefix}")
+    try:
+        stems, stem_sources = _stem_filter(a)
+    except (OSError, ValueError) as exc:
+        return fail(a, str(exc))
+    subset: dict = {}
+    if stems is not None:
+        frames = [u for u in frames if Path(u).stem in stems]
+        subset = {"requested": len(stems), "matched": len(frames)}
+        if not frames:
+            return fail(a, f"no frames match the requested subset "
+                           f"({' ∩ '.join(stem_sources)} = {len(stems)} stems, 0 present "
+                           f"under {frames_prefix})")
     cmap = json.loads(Path(a.category_map).read_text()) if a.category_map else None
     try:
         client = client_for(spec, endpoint=a.endpoint, categories=a.categories or None)
@@ -278,9 +320,10 @@ def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - nee
             frames, client, labels_prefix, storage=storage, category_map=cmap,
             min_score=a.min_score, strict_categories=a.strict_categories,
             max_concurrency=a.concurrency,
+            on_progress=progress_reporter(a, "prelabel-cloud"),
         )
     rc = emit(a, {"labeled": n, "total": len(frames), "prefix": labels_prefix,
-                  "failures_file": f"{labels_prefix}/failures.jsonl"},
+                  "failures_file": f"{labels_prefix}/failures.jsonl", **subset},
               f"labeled {n}/{len(frames)} frames -> {labels_prefix}")
     _refresh_manifest(a.dataset, a.base)
     return rc
@@ -318,6 +361,7 @@ def _cmd_transcribe(a: argparse.Namespace) -> int:
         n = transcribe(
             a.labels, client, categories=a.categories, pad=a.pad,
             images_dir=a.images, max_concurrency=a.concurrency,
+            on_progress=progress_reporter(a, "transcribe"),
         )
     return emit(a, {"transcribed": n, "labels": a.labels,
                     "failures_file": str(Path(a.labels) / FAILURES_NAME)},
@@ -333,6 +377,12 @@ def _cmd_transcribe_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - n
         client = _transcribe_client(a)
     except ValueError as exc:
         return fail(a, str(exc))
+    try:
+        stems, _ = _stem_filter(a)
+    except (OSError, ValueError) as exc:
+        return fail(a, str(exc))
+    if stems is not None and not stems:
+        return fail(a, "the requested stem subset is empty (--stems ∩ --stems-file)")
     layout = DatasetLayout.from_env(a.dataset, base=a.base)
     labels_prefix = layout.labels(a.group, a.labels_name)
     to_prefix = layout.labels(a.group, a.to_name) if a.to_name else None
@@ -340,7 +390,8 @@ def _cmd_transcribe_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - n
     with client:
         n = transcribe_cloud(
             labels_prefix, client, storage=storage, categories=a.categories,
-            pad=a.pad, to_prefix=to_prefix, max_concurrency=a.concurrency,
+            pad=a.pad, to_prefix=to_prefix, stems=stems, max_concurrency=a.concurrency,
+            on_progress=progress_reporter(a, "transcribe-cloud"),
         )
     out = to_prefix or labels_prefix
     rc = emit(a, {"transcribed": n, "prefix": out, "failures_file": f"{out}/{FAILURES_NAME}"},
@@ -363,6 +414,12 @@ def _cmd_segment_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - need
     if spec.backend != "transformers":
         return fail(a, f"model {spec.key!r} is not a segmenter on our model-server "
                        "(transformers backend required, e.g. sam2)")
+    try:
+        stems, _ = _stem_filter(a)
+    except (OSError, ValueError) as exc:
+        return fail(a, str(exc))
+    if stems is not None and not stems:
+        return fail(a, "the requested stem subset is empty (--stems ∩ --stems-file)")
     layout = DatasetLayout.from_env(a.dataset, base=a.base)
     labels_prefix = layout.labels(a.group, a.labels_name)
     to_prefix = layout.labels(a.group, a.to_name) if a.to_name else None
@@ -374,7 +431,8 @@ def _cmd_segment_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - need
     with client:
         n = segment_cloud(
             labels_prefix, client, storage=storage, categories=a.categories,
-            to_prefix=to_prefix, max_concurrency=a.concurrency,
+            to_prefix=to_prefix, stems=stems, max_concurrency=a.concurrency,
+            on_progress=progress_reporter(a, "segment-cloud"),
         )
     out = to_prefix or labels_prefix
     rc = emit(a, {"segmented": n, "prefix": out, "failures_file": f"{out}/{FAILURES_NAME}"},
@@ -482,8 +540,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="labeling-t")
     sub = p.add_subparsers(dest="cmd", required=True)
     jf = [json_flag()]  # every subcommand takes --json (envelope on stdout)
+    jpf = [json_flag(), progress_flag()]  # long runs also take --progress-file
 
-    pre = sub.add_parser("prelabel", help="run a registered model over an image folder", parents=jf)
+    pre = sub.add_parser("prelabel", help="run a registered model over an image folder", parents=jpf)
     pre.add_argument("--images", required=True)
     pre.add_argument("--out", required=True)
     pre.add_argument("--model", default="qwen3_vl", help="model spec key (labeling_t/models.py)")
@@ -508,7 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
     fr.set_defaults(func=_cmd_frames)
 
     ig = sub.add_parser("ingest-images", help="upload a local image folder into a dataset group's frames (storage)",
-                        parents=jf)
+                        parents=jpf)
     ig.add_argument("--src", required=True, help="local directory of images")
     ig.add_argument("--dataset", required=True)
     ig.add_argument("--group", required=True, help="group/partition name, e.g. all")
@@ -517,7 +576,7 @@ def build_parser() -> argparse.ArgumentParser:
     ig.set_defaults(func=_cmd_ingest_images)
 
     pc = sub.add_parser("prelabel-cloud", help="label a dataset's frames in S3 (presigned URL -> vLLM -> labels in S3)",
-                        parents=jf)
+                        parents=jpf)
     pc.add_argument("--dataset", required=True)
     pc.add_argument("--group", required=True)
     pc.add_argument("--model", default="qwen3_vl", help="model spec key")
@@ -525,6 +584,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="model endpoint URL (default: newest recorded pod for the model)")
     pc.add_argument("--labels-name", default="", help="namespace pre-labels into labels-<name>/ "
                     "(keeps several models' pre-labels apart; default writes to labels/)")
+    pc.add_argument("--frames-from", default=None,
+                    help="only frames whose stems appear in this label set (selector: "
+                         "labels-<name> | verified[-<name>] | labels)")
+    pc.add_argument("--stems", default=None, type=_csv,
+                    help="only these frame stems, comma-separated (sample-first workflow)")
+    pc.add_argument("--stems-file", default=None, help="only stems listed in this file (one per line)")
     pc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     pc.add_argument("--categories", default=None, type=_csv, help="override spec default categories")
     pc.add_argument("--category-map", default=None, help="JSON file: model label -> category")
@@ -534,7 +599,7 @@ def build_parser() -> argparse.ArgumentParser:
     pc.set_defaults(func=_cmd_prelabel_cloud)
 
     sg = sub.add_parser("segment-cloud", help="fill Detection.mask: send a label set's boxes to the segmenter (SAM2)",
-                        parents=jf)
+                        parents=jpf)
     sg.add_argument("--dataset", required=True)
     sg.add_argument("--group", required=True)
     sg.add_argument("--model", default="sam2", help="segmenter spec key (transformers backend)")
@@ -545,13 +610,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="write enriched copies to labels-<name>/ instead of rewriting the source in place")
     sg.add_argument("--categories", default=None, type=_csv,
                     help="only segment these detection categories (default: all boxes)")
+    sg.add_argument("--stems", default=None, type=_csv,
+                    help="only these label-file stems, comma-separated (sample-first workflow)")
+    sg.add_argument("--stems-file", default=None, help="only stems listed in this file (one per line)")
     sg.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     sg.add_argument("--concurrency", type=int, default=1,
                     help="keep 1 for the transformers backend (one GPU, not reentrant)")
     sg.set_defaults(func=_cmd_segment_cloud)
 
     tr = sub.add_parser("transcribe", help="OCR: fill Detection.text on matching regions via a hosted VLM",
-                        parents=jf)
+                        parents=jpf)
     tr.add_argument("--labels", required=True, help="dir of <frame>.json neutral labels (rewritten in place)")
     tr.add_argument("--categories", required=True, type=_csv,
                     help="which detection categories to transcribe (the region filter)")
@@ -567,12 +635,15 @@ def build_parser() -> argparse.ArgumentParser:
     tr.set_defaults(func=_cmd_transcribe)
 
     tc = sub.add_parser("transcribe-cloud", help="OCR a dataset's S3 labels: crop regions locally, text via hosted VLM",
-                        parents=jf)
+                        parents=jpf)
     tc.add_argument("--dataset", required=True)
     tc.add_argument("--group", required=True)
     tc.add_argument("--categories", required=True, type=_csv,
                     help="which detection categories to transcribe (the region filter)")
     tc.add_argument("--labels-name", default="", help="read labels from labels-<name>/ (default labels/)")
+    tc.add_argument("--stems", default=None, type=_csv,
+                    help="only these label-file stems, comma-separated (sample-first workflow)")
+    tc.add_argument("--stems-file", default=None, help="only stems listed in this file (one per line)")
     tc.add_argument("--to-name", default=None,
                     help="write enriched copies to labels-<name>/ instead of rewriting the source in place")
     tc.add_argument("--model", default="openai_ocr", help="OCR model spec key (openai_ocr / gemini_ocr)")
@@ -603,7 +674,7 @@ def build_parser() -> argparse.ArgumentParser:
     ic.add_argument("--ttl", type=int, default=604800, help="presigned URL lifetime seconds (default 7d)")
     ic.set_defaults(func=_cmd_import_ls_cloud)
 
-    fc = sub.add_parser("from-ls-cloud", help="pull verified annotations from LS API -> S3 verified/", parents=jf)
+    fc = sub.add_parser("from-ls-cloud", help="pull verified annotations from LS API -> S3 verified/", parents=jpf)
     fc.add_argument("--dataset", required=True)
     fc.add_argument("--group", required=True)
     fc.add_argument("--url", help="hosted Label Studio base URL (default $LS_URL)", **_env_arg("LS_URL"))

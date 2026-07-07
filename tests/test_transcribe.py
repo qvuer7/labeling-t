@@ -201,3 +201,16 @@ def test_transcribe_cloud_failure_flushed_once(tmp_path):
     assert n == 0
     fails = (labels_dir / FAILURES_NAME).read_text().strip().splitlines()
     assert len(fails) == 1 and "api down" in json.loads(fails[0])["error"]
+
+
+def test_transcribe_cloud_stems_filter_restricts_the_run(tmp_path):
+    _dataset(tmp_path, detections=[_det("scoreboard")], stem="f0")
+    labels_dir = _dataset(tmp_path, detections=[_det("scoreboard")], stem="f1")
+    client = FakeOCRClient()
+    n = transcribe_cloud(str(labels_dir), client, storage=LocalStorage(),
+                         categories=["scoreboard"], stems={"f1"}, max_concurrency=1)
+    assert n == 1
+    f0 = ImageLabels.model_validate_json((labels_dir / "f0.json").read_text())
+    f1 = ImageLabels.model_validate_json((labels_dir / "f1.json").read_text())
+    assert all(d.text is None for d in f0.detections)      # outside the subset
+    assert all(d.text is not None for d in f1.detections)  # transcribed

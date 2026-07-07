@@ -67,6 +67,7 @@ def segment_cloud(
     storage,
     categories: list[str] | None = None,
     to_prefix: str | None = None,
+    stems: set[str] | None = None,
     max_concurrency: int = 1,
     resume: bool = True,
     on_progress: Callable[[int, int], None] | None = None,
@@ -75,14 +76,17 @@ def segment_cloud(
 
     In place by default; `to_prefix` writes enriched copies instead (source
     untouched; resume reads the copy first). `categories=None` masks every
-    box. Default concurrency is 1: the segmenter runs on the transformers
-    backend, which serves one model on one GPU and is not reentrant.
-    Returns the number of label files enriched this run.
+    box. `stems` restricts the run to those file stems (sample-first workflow);
+    None = the whole set. Default concurrency is 1: the segmenter runs on the
+    transformers backend, which serves one model on one GPU and is not
+    reentrant. Returns the number of label files enriched this run.
     """
     cats = set(categories) if categories else None
     src = labels_prefix.rstrip("/")
     out = to_prefix.rstrip("/") if to_prefix else src
     keys = sorted(k for k in storage.list(src + "/") if k.endswith(".json"))
+    if stems is not None:
+        keys = [k for k in keys if k.rsplit("/", 1)[-1][:-5] in stems]
     done_set = set(storage.list(out + "/")) if (resume and to_prefix) else set()
     fails: list[str] = []
     lock = threading.Lock()

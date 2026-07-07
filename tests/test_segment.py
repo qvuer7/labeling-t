@@ -123,3 +123,15 @@ def test_segment_cloud_failure_does_not_stop_run(tmp_path):
     assert n == 1
     fails = (labels_dir / FAILURES_NAME).read_text().strip().splitlines()
     assert len(fails) == 1 and "bad.json" in json.loads(fails[0])["labels"]
+
+
+def test_segment_cloud_stems_filter_restricts_the_run(tmp_path):
+    _dataset(tmp_path, detections=[_det("cat")], stem="f0")
+    labels_dir = _dataset(tmp_path, detections=[_det("cat")], stem="f1")
+    client = FakeSegmenter()
+    n = segment_cloud(str(labels_dir), client, storage=LocalStorage(),
+                      stems={"f1"}, max_concurrency=1)
+    assert n == 1 and len(client.calls) == 1
+    # f0 untouched: no mask landed on it
+    f0 = ImageLabels.model_validate_json((labels_dir / "f0.json").read_text())
+    assert all(d.mask is None for d in f0.detections)

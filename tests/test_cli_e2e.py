@@ -210,3 +210,84 @@ def test_ls_config_json_wraps_xml(capsys):
     envelope = json.loads(capsys.readouterr().out)
     assert rc == 0 and envelope["ok"] is True
     assert "<RectangleLabels" in envelope["result"]["xml"]
+
+
+# ---- prelabel-cloud e2e vehicle (local base + LocalStorage + FakeChatClient) ---
+
+def _seed_cloud_frames(tmp_path, n=4):
+    base = str(tmp_path / "cloud")
+    d = Path(base) / "datasets/d/frames/g"
+    d.mkdir(parents=True)
+    for i in range(n):
+        Image.new("RGB", (100, 100), (0, 0, 0)).save(d / f"f{i}.jpg")
+    return base
+
+
+def test_prelabel_cloud_e2e_local_base(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("labeling_t.model_client.ChatClient", FakeChatClient)
+    base = _seed_cloud_frames(tmp_path, n=3)
+    rc = main(["prelabel-cloud", "--dataset", "d", "--group", "g", "--base", base,
+               "--model", "qwen3_vl", "--json"])
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 0 and envelope["result"]["labeled"] == 3
+    assert "requested" not in envelope["result"]  # no subset asked for
+    labels = Path(base) / "datasets/d/labels/g"
+    assert len(list(labels.glob("*.json"))) == 3
+
+
+def test_prelabel_cloud_stems_subset(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("labeling_t.model_client.ChatClient", FakeChatClient)
+    base = _seed_cloud_frames(tmp_path, n=4)
+    rc = main(["prelabel-cloud", "--dataset", "d", "--group", "g", "--base", base,
+               "--model", "qwen3_vl", "--stems", "f0,f2,ghost", "--json"])
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    # requested = size of the stem filter; matched = frames actually present
+    assert envelope["result"]["requested"] == 3
+    assert envelope["result"]["matched"] == 2
+    assert envelope["result"]["labeled"] == 2
+    stems = {p.stem for p in (Path(base) / "datasets/d/labels/g").glob("*.json")}
+    assert stems == {"f0", "f2"}
+
+
+def test_prelabel_cloud_stems_intersect_frames_from(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("labeling_t.model_client.ChatClient", FakeChatClient)
+    base = _seed_cloud_frames(tmp_path, n=4)
+    # a previous run's label set provides the --frames-from universe
+    ref = Path(base) / "datasets/d/labels-ref/g"
+    ref.mkdir(parents=True)
+    for stem in ("f1", "f2"):
+        ref.joinpath(f"{stem}.json").write_text('{"image_path":"x","width":1,"height":1,"detections":[]}')
+    rc = main(["prelabel-cloud", "--dataset", "d", "--group", "g", "--base", base,
+               "--model", "qwen3_vl", "--frames-from", "labels-ref", "--stems", "f2,f3",
+               "--labels-name", "out", "--json"])
+    envelope = json.loads(capsys.readouterr().out)
+    # intersection of {f1,f2} and {f2,f3} = {f2}
+    assert rc == 0 and envelope["result"]["labeled"] == 1
+    assert envelope["result"]["requested"] == 1 and envelope["result"]["matched"] == 1
+    assert [p.stem for p in (Path(base) / "datasets/d/labels-out/g").glob("*.json")] == ["f2"]
+
+
+def test_prelabel_cloud_empty_subset_fails(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("labeling_t.model_client.ChatClient", FakeChatClient)
+    base = _seed_cloud_frames(tmp_path, n=2)
+    rc = main(["prelabel-cloud", "--dataset", "d", "--group", "g", "--base", base,
+               "--model", "qwen3_vl", "--stems", "nope", "--json"])
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 1 and envelope["ok"] is False
+    assert "no frames match" in envelope["error"]["message"]
+
+
+def test_prelabel_cloud_progress_on_stderr_envelope_alone_on_stdout(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("labeling_t.model_client.ChatClient", FakeChatClient)
+    base = _seed_cloud_frames(tmp_path, n=3)
+    rc = main(["prelabel-cloud", "--dataset", "d", "--group", "g", "--base", base,
+               "--model", "qwen3_vl", "--json"])
+    out, err = capsys.readouterr()
+    assert rc == 0
+    json.loads(out)  # stdout: EXACTLY one JSON envelope, nothing else
+    assert len(out.strip().splitlines()) == 1
+    events = [json.loads(ln) for ln in err.strip().splitlines()
+              if ln.startswith("{") and '"event"' in ln]
+    assert events and events[0]["stage"] == "prelabel-cloud"
+    assert events[-1]["done"] == events[-1]["total"] == 3  # final item always reported

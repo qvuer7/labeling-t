@@ -182,6 +182,19 @@ no manifest needed. **`--labels-name`** namespaces a second model's pre-labels
 into `labels-<name>/` so several models coexist without clobbering (e.g.
 LocateAnything in `labels-locateanything/` while Qwen stays in `labels/`).
 
+**Subsetting:** `prelabel-cloud` takes `--frames-from <selector>` (only frames
+whose stems appear in that label set), `--stems a,b,c`, and `--stems-file` —
+given together they intersect; an empty result is a loud failure and the
+envelope reports `requested`/`matched`. `segment-cloud`/`transcribe-cloud`
+take `--stems`/`--stems-file` the same way (sample-first, then full run).
+
+**Progress:** the long-running stages (prelabel[-cloud], segment-cloud,
+transcribe[-cloud], ingest-images, from-ls-cloud) emit throttled JSON progress
+lines to stderr in BOTH output modes — `{"event":"progress","stage":…,"done":n,
+"total":N,"elapsed_s":s}`; first item, then every 25 items or 5 s, and always
+the final item. `--progress-file <path>` additionally rewrites the latest
+event atomically for pollers.
+
 **Dataset-state commands** (`labelset.py`, pure over the Storage protocol so a
 local dir and an S3 prefix answer identically): `stats` (files, detections,
 per-category counts, mask/text coverage, sources, schema_version mix — counted
