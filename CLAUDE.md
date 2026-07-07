@@ -104,6 +104,6 @@ labeling-t render --dataset ipbl-basketball-1k --group all --set labels-combined
 labeling-t-runpod datacenters --gpu a40            # check GPU stock
 labeling-t-runpod up --model sam2 --gpu a40        # rent+serve; down <id> to stop billing
 # S3 (aws cli with DO Spaces endpoint):
-aws s3 sync s3://ml-cv-data/datasets/ipbl-basketball-1k/verified-reviewed-clean/all/ ./masks \
+aws s3 sync s3://ml-cv-data/datasets/ipbl-basketball-1k/labels-combined/all/ ./masks \
     --endpoint-url https://fra1.digitaloceanspaces.com
 ```
