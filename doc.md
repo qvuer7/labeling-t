@@ -182,6 +182,15 @@ no manifest needed. **`--labels-name`** namespaces a second model's pre-labels
 into `labels-<name>/` so several models coexist without clobbering (e.g.
 LocateAnything in `labels-locateanything/` while Qwen stays in `labels/`).
 
+**Dataset-state commands** (`labelset.py`, pure over the Storage protocol so a
+local dir and an S3 prefix answer identically): `stats` (files, detections,
+per-category counts, mask/text coverage, sources, schema_version mix — counted
+from the raw JSON), `validate` (rc 1 + violations list on schema failures),
+`diff` (join by stem: only-in-a/only-in-b/changed/identical, where `changed`
+compares order-normalized detections ignoring image_path/width/height, and
+`byte_identical` counts sha256-equal pairs — the never-delete-without-proof
+number). Sets are named by selector or `--labels <dir>`.
+
 **Set selectors** (`DatasetLayout.set_prefix`): commands that point at an
 existing label set take the storage leaf name as a neutral selector —
 `labels`, `labels-<name>`, `verified`, `verified-<name>` — exactly what a

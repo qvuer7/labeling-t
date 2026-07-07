@@ -151,7 +151,10 @@ class S3Storage:
 
 
 def open_storage(uri: str | None = None) -> Storage:
-    """S3 backend for s3:// URIs or when S3_BUCKET is configured; else local."""
-    if (uri and is_s3(uri)) or os.environ.get("S3_BUCKET"):
-        return S3Storage.from_env()
-    return LocalStorage()
+    """Backend for a URI: s3:// -> S3, anything else -> local filesystem.
+    The URI decides — NOT the environment: with S3_BUCKET configured (the
+    normal .env), an explicit local --base must still hit the filesystem.
+    Without a URI, S3 when S3_BUCKET is configured, else local."""
+    if uri:
+        return S3Storage.from_env() if is_s3(uri) else LocalStorage()
+    return S3Storage.from_env() if os.environ.get("S3_BUCKET") else LocalStorage()

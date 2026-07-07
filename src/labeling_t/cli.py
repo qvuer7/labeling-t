@@ -9,6 +9,8 @@ Subcommands map to the pipeline stages:
     from-ls         LS export ──► per-frame label JSON
     to-coco         labels  ──► COCO annotations json
     ls-config       categories ──► print labeling-config XML
+    stats/validate  label set ──► counts / schema violations (labelset.py)
+    diff            two label sets ──► stems only-in-a/only-in-b/changed
 
 `labels` on disk = a directory of <stem>.json files, each one ImageLabels.
 
@@ -381,6 +383,81 @@ def _cmd_segment_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - need
     return rc
 
 
+def _resolve_set(a: argparse.Namespace, *, dir_attr: str = "labels",
+                 sel_attr: str = "set") -> tuple[str, str, object]:
+    """(display name, prefix, storage) for a set named either by a local dir
+    (--labels DIR) or by dataset coordinates (--dataset/--group/--set SELECTOR).
+    Raises ValueError with the agent-actionable message."""
+    from .layout import DatasetLayout
+    from .storage import LocalStorage, open_storage
+
+    directory = getattr(a, dir_attr, None)
+    selector = getattr(a, sel_attr, None)
+    if directory and (a.dataset or selector):
+        raise ValueError(f"--{dir_attr} is a local-dir mode; don't combine it with --dataset/--{sel_attr}")
+    if directory:
+        prefix = directory.rstrip("/")
+        return directory, prefix, LocalStorage()
+    if not (a.dataset and a.group and selector):
+        raise ValueError(f"name a set: either --{dir_attr} DIR, or --dataset D --group G --{sel_attr} "
+                         "SELECTOR (labels | labels-<name> | verified | verified-<name>)")
+    prefix = DatasetLayout.from_env(a.dataset, base=a.base).set_prefix(a.group, selector)
+    return selector, prefix, open_storage(prefix)
+
+
+def _cmd_stats(a: argparse.Namespace) -> int:
+    from .labelset import set_stats
+
+    try:
+        name, prefix, storage = _resolve_set(a)
+    except ValueError as exc:
+        return fail(a, str(exc))
+    res = {"set": name, **set_stats(prefix, storage=storage)}
+    if a.json:
+        return emit(a, res, f"{res['files']} files, {res['detections']} detections")
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def _cmd_validate(a: argparse.Namespace) -> int:
+    from .labelset import set_validate
+
+    try:
+        name, prefix, storage = _resolve_set(a)
+    except ValueError as exc:
+        return fail(a, str(exc))
+    res = set_validate(prefix, storage=storage)
+    if res["violations"]:
+        return fail(a, f"{len(res['violations'])}/{res['files']} files violate the schema "
+                       f"(showing up to {a.limit})",
+                    result={"set": name, "files": res["files"], "valid": res["valid"],
+                            "violations": res["violations"][:a.limit],
+                            "violations_total": len(res["violations"])})
+    return emit(a, {"set": name, "files": res["files"], "valid": res["valid"],
+                    "violations": [], "violations_total": 0},
+                f"OK: {res['files']} files, all schema-valid ({name})")
+
+
+def _cmd_diff(a: argparse.Namespace) -> int:
+    from .labelset import set_diff
+
+    try:
+        name_a, prefix_a, storage_a = _resolve_set(a, dir_attr="a_dir", sel_attr="a")
+        name_b, prefix_b, storage_b = _resolve_set(a, dir_attr="b_dir", sel_attr="b")
+    except ValueError as exc:
+        return fail(a, str(exc))
+    res = set_diff(prefix_a, prefix_b, storage_a=storage_a, storage_b=storage_b)
+    res = {"a": name_a, "b": name_b, **res}
+    msg = (f"a={name_a} b={name_b}: only-in-a {len(res['only_in_a'])}, "
+           f"only-in-b {len(res['only_in_b'])}, changed {len(res['changed'])}, "
+           f"identical {res['identical']} ({res['byte_identical']} byte-identical)")
+    if a.json:
+        return emit(a, res, msg)
+    print(json.dumps(res, indent=2))
+    print(msg)
+    return 0
+
+
 def _cmd_to_coco(a: argparse.Namespace) -> int:
     from .adapters.coco import to_coco
 
@@ -566,6 +643,36 @@ def build_parser() -> argparse.ArgumentParser:
     frm.add_argument("--out", required=True)
     frm.add_argument("--source", default="annotations", choices=["annotations", "predictions"])
     frm.set_defaults(func=_cmd_from_ls)
+
+    def _set_args(sp):
+        sp.add_argument("--dataset", default=None)
+        sp.add_argument("--group", default=None)
+        sp.add_argument("--set", default=None,
+                        help="set selector: labels | labels-<name> | verified | verified-<name>")
+        sp.add_argument("--labels", default=None, help="local dir of <stem>.json labels instead of --dataset/--set")
+        sp.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
+
+    st = sub.add_parser("stats", help="aggregate counts for a label set "
+                        "(files, detections, categories, mask/text coverage, sources)", parents=jf)
+    _set_args(st)
+    st.set_defaults(func=_cmd_stats)
+
+    vd = sub.add_parser("validate", help="schema-validate every file in a label set (rc 1 on violations)",
+                        parents=jf)
+    _set_args(vd)
+    vd.add_argument("--limit", type=int, default=20, help="max violations to report (total is always counted)")
+    vd.set_defaults(func=_cmd_validate)
+
+    df = sub.add_parser("diff", help="compare two label sets by stem (only-in-a/only-in-b/changed/identical)",
+                        parents=jf)
+    df.add_argument("--dataset", default=None)
+    df.add_argument("--group", default=None)
+    df.add_argument("--a", default=None, help="set selector for side A (labels-<name>, verified, ...)")
+    df.add_argument("--b", default=None, help="set selector for side B")
+    df.add_argument("--a-dir", default=None, help="local dir for side A instead of --a")
+    df.add_argument("--b-dir", default=None, help="local dir for side B instead of --b")
+    df.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
+    df.set_defaults(func=_cmd_diff)
 
     coco = sub.add_parser("to-coco", help="export labels to COCO", parents=jf)
     coco.add_argument("--labels", required=True)
