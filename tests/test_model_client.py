@@ -264,3 +264,33 @@ def test_client_for_routes_by_backend(monkeypatch):
     structured = ModelSpec(key="t", name="m", env_prefix="T", prompt="p", backend="transformers")
     assert isinstance(client_for(chat), ChatClient)
     assert isinstance(client_for(structured), TransformersClient)
+
+
+def test_client_for_explicit_endpoint_beats_everything(monkeypatch):
+    # --endpoint on the CLI must win over env and recorded pods alike.
+    monkeypatch.setenv("T_ENDPOINT", "http://from-env:8000")
+    spec = ModelSpec(key="t", name="m", env_prefix="T", prompt="p", backend="transformers")
+    client = client_for(spec, endpoint="http://explicit:9000/")
+    assert str(client._http.base_url).rstrip("/") == "http://explicit:9000"
+
+
+def test_from_env_prefers_recorded_pod_over_env(monkeypatch):
+    from labeling_t import podstate
+
+    monkeypatch.setenv("T_ENDPOINT", "http://from-env:8000")
+    podstate.record_pod({"id": "p1", "model": "t", "env_prefix": "T",
+                         "endpoint": "http://pod:8000", "gpu": None, "cost_per_hr": 0.4,
+                         "created_at": "2026-07-07T00:00:00Z",
+                         "terminate_after": "2099-01-01T00:00:00Z", "ready": True})
+    client = TransformersClient.from_env(ModelSpec(
+        key="t", name="m", env_prefix="T", prompt="p", backend="transformers"))
+    assert str(client._http.base_url).rstrip("/") == "http://pod:8000"
+
+
+def test_from_env_error_names_the_recovery_commands(monkeypatch):
+    monkeypatch.delenv("T_ENDPOINT", raising=False)
+    spec = ModelSpec(key="t", name="m", env_prefix="T", prompt="p", backend="transformers")
+    with pytest.raises(ValueError) as exc:
+        client_for(spec)
+    # the error must tell an agent HOW to get an endpoint, not just that it's missing
+    assert "labeling-t-runpod up" in str(exc.value) and "T_ENDPOINT" in str(exc.value)

@@ -76,7 +76,7 @@ def _cmd_prelabel(a: argparse.Namespace) -> int:
         return fail(a, f"no images found in {a.images}")
     cmap = json.loads(Path(a.category_map).read_text()) if a.category_map else None
     try:
-        client = client_for(spec, categories=a.categories or None)
+        client = client_for(spec, endpoint=a.endpoint, categories=a.categories or None)
     except ValueError as exc:
         return fail(a, str(exc))
     with client:
@@ -268,7 +268,7 @@ def _cmd_prelabel_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - nee
         return fail(a, f"no frames under {frames_prefix}")
     cmap = json.loads(Path(a.category_map).read_text()) if a.category_map else None
     try:
-        client = client_for(spec, categories=a.categories or None)
+        client = client_for(spec, endpoint=a.endpoint, categories=a.categories or None)
     except ValueError as exc:
         return fail(a, str(exc))
     with client:
@@ -302,7 +302,7 @@ def _transcribe_client(a: argparse.Namespace):
     if a.prompt:
         spec = replace(spec, prompt=a.prompt)  # frozen dataclass -> copy
     # a transcription is a few tokens; cap generation accordingly.
-    return client_for(spec, max_tokens=64)
+    return client_for(spec, endpoint=a.endpoint, max_tokens=64)
 
 
 def _cmd_transcribe(a: argparse.Namespace) -> int:
@@ -366,7 +366,7 @@ def _cmd_segment_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - need
     to_prefix = layout.labels(a.group, a.to_name) if a.to_name else None
     storage = open_storage(labels_prefix)
     try:
-        client = client_for(spec)
+        client = client_for(spec, endpoint=a.endpoint)
     except ValueError as exc:
         return fail(a, str(exc))
     with client:
@@ -410,6 +410,9 @@ def build_parser() -> argparse.ArgumentParser:
     pre.add_argument("--images", required=True)
     pre.add_argument("--out", required=True)
     pre.add_argument("--model", default="qwen3_vl", help="model spec key (labeling_t/models.py)")
+    pre.add_argument("--endpoint", default=None,
+                     help="model endpoint URL (default: newest recorded pod for the model, "
+                          "see `labeling-t-runpod status`)")
     pre.add_argument("--categories", default=None, type=_csv, help="override the spec's default categories")
     pre.add_argument("--category-map", default=None, help="JSON file: model label -> category")
     pre.add_argument("--min-score", type=float, default=0.0)
@@ -441,6 +444,8 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--dataset", required=True)
     pc.add_argument("--group", required=True)
     pc.add_argument("--model", default="qwen3_vl", help="model spec key")
+    pc.add_argument("--endpoint", default=None,
+                    help="model endpoint URL (default: newest recorded pod for the model)")
     pc.add_argument("--labels-name", default="", help="namespace pre-labels into labels-<name>/ "
                     "(keeps several models' pre-labels apart; default writes to labels/)")
     pc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
@@ -456,6 +461,8 @@ def build_parser() -> argparse.ArgumentParser:
     sg.add_argument("--dataset", required=True)
     sg.add_argument("--group", required=True)
     sg.add_argument("--model", default="sam2", help="segmenter spec key (transformers backend)")
+    sg.add_argument("--endpoint", default=None,
+                    help="model endpoint URL (default: newest recorded pod for the model)")
     sg.add_argument("--labels-name", default="", help="read labels from labels-<name>/ (default labels/)")
     sg.add_argument("--to-name", default=None,
                     help="write enriched copies to labels-<name>/ instead of rewriting the source in place")
@@ -472,6 +479,8 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--categories", required=True, type=_csv,
                     help="which detection categories to transcribe (the region filter)")
     tr.add_argument("--model", default="openai_ocr", help="OCR model spec key (openai_ocr / gemini_ocr)")
+    tr.add_argument("--endpoint", default=None,
+                    help="model endpoint URL (default: the spec's provider URL / newest recorded pod)")
     tr.add_argument("--prompt", default=None,
                     help="override the OCR prompt (literal { or } must be doubled: {{ }})")
     tr.add_argument("--pad", type=int, default=2, help="pixels of context around each crop")
@@ -490,6 +499,8 @@ def build_parser() -> argparse.ArgumentParser:
     tc.add_argument("--to-name", default=None,
                     help="write enriched copies to labels-<name>/ instead of rewriting the source in place")
     tc.add_argument("--model", default="openai_ocr", help="OCR model spec key (openai_ocr / gemini_ocr)")
+    tc.add_argument("--endpoint", default=None,
+                    help="model endpoint URL (default: the spec's provider URL / newest recorded pod)")
     tc.add_argument("--prompt", default=None,
                     help="override the OCR prompt (literal { or } must be doubled: {{ }})")
     tc.add_argument("--pad", type=int, default=2, help="pixels of context around each crop")

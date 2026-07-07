@@ -3,12 +3,13 @@
 A ModelSpec bundles everything that is INTRINSIC to a model: its served name,
 the prompt phrasing it expects, how it reports box coordinates, and how to parse
 its raw output. The framework stays decoupled from where the model is hosted:
-only the endpoint + key come from the environment (per model), never the
+the endpoint resolves at run time (podstate.resolve_endpoint — recorded pod /
+--endpoint flag / SaaS default), keys come from the environment; never the
 model's behavior.
 
-    ModelSpec (code)            .env (infra only)
-      name, prompt              LOCATE_ANYTHING_ENDPOINT=http://gpu:8000
-      coord_space, parse        LOCATE_ANYTHING_API_KEY=...
+    ModelSpec (code)            .env (secrets)              .labeling-t/pods.json (runtime)
+      name, prompt              LOCATE_ANYTHING_API_KEY=…   endpoint of the running pod
+      coord_space, parse
       default categories
 
 Add a model = add a ModelSpec instance + register it. Project-level knobs

@@ -20,8 +20,8 @@ class FakeChatClient:
         self.spec = spec
 
     @classmethod
-    def from_env(cls, spec, *, categories=None, **kw):
-        return cls("http://fake", spec, categories=categories, **kw)
+    def from_env(cls, spec, *, endpoint=None, categories=None, **kw):
+        return cls(endpoint or "http://fake", spec, categories=categories, **kw)
 
     def infer(self, image_path):
         # qwen3_vl spec uses coord_space="norm1000"; on a 100x100 image
@@ -84,8 +84,8 @@ class FakeOCRChatClient:
         self.spec = spec
 
     @classmethod
-    def from_env(cls, spec, *, categories=None, **kw):
-        return cls("http://fake", spec, categories=categories, **kw)
+    def from_env(cls, spec, *, endpoint=None, categories=None, **kw):
+        return cls(endpoint or "http://fake", spec, categories=categories, **kw)
 
     def infer(self, image):
         assert isinstance(image, bytes)  # transcribe sends in-memory PNG crops

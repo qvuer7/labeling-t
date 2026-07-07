@@ -62,7 +62,7 @@ labeling-t ingest-images --src ./images --dataset my-dataset --group all
 #    actually have the GPU in stock (see `datacenters`); hosted models need no pod.
 labeling-t-runpod gpus                                       # GPU presets
 labeling-t-runpod datacenters --gpu rtx5090                  # where a GPU is in stock
-labeling-t-runpod up --model locate_anything --gpu a40       # rent + serve + write endpoint -> .env
+labeling-t-runpod up --model locate_anything --gpu a40       # rent + serve; endpoint recorded in .labeling-t/pods.json
 
 # 2. detect -> neutral-schema label JSONs land straight in S3 (use --concurrency 1
 #    for the transformers backend). --labels-name keeps a 2nd model's labels separate.

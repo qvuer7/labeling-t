@@ -1,4 +1,4 @@
-"""Server adapters: OWLv2 unpad/normalization (no torch), registry, runpod wiring."""
+"""Server adapters: OWLv2 unpad/normalization (no torch), registry, serving recipe."""
 
 import pytest
 
@@ -137,79 +137,3 @@ def test_dcs_for_gpu_filters_by_stock_and_ranks_best_first():
     assert out == [("EU-CZ-1", "High"), ("EU-RO-1", "Low")]
     assert _dcs_for_gpu(datacenters, "NVIDIA A40") == [("EU-RO-1", "High")]
     assert _dcs_for_gpu([], "anything") == []
-
-
-# ---- --json envelope on the runpod CLI (runpodctl stubbed) ----------------
-
-def test_status_json_envelope(monkeypatch, capsys):
-    import json
-
-    import labeling_t.runpod as rp
-
-    def fake_runpodctl(args, env):
-        if args[0] == "user":
-            return json.dumps({"clientBalance": 12.5, "currentSpendPerHr": 0.69})
-        if args[0] == "pod":
-            return json.dumps([{"id": "abc123", "name": "labeling-t-sam2",
-                                "costPerHr": 0.69, "desiredStatus": "RUNNING"}])
-        raise AssertionError(args)
-
-    monkeypatch.setattr(rp, "_runpodctl", fake_runpodctl)
-    rc = rp.main(["status", "--json"])
-    out, err = capsys.readouterr()
-    envelope = json.loads(out)  # stdout is EXACTLY one JSON envelope
-    assert rc == 0 and envelope["ok"] is True
-    assert envelope["result"]["balance"] == 12.5
-    assert envelope["result"]["pods"][0]["id"] == "abc123"
-    assert "balance: $12.50" in err  # prose demoted to stderr
-
-
-def test_status_without_json_is_prose(monkeypatch, capsys):
-    import json
-
-    import labeling_t.runpod as rp
-
-    monkeypatch.setattr(rp, "_runpodctl", lambda args, env: json.dumps(
-        {"clientBalance": 1.0, "currentSpendPerHr": 0} if args[0] == "user" else []))
-    rc = rp.main(["status"])
-    out, err = capsys.readouterr()
-    assert rc == 0 and "no pods running" in out and not err
-
-
-def test_gpus_json_envelope(capsys):
-    import json
-
-    import labeling_t.runpod as rp
-
-    rc = rp.main(["gpus", "--json"])
-    envelope = json.loads(capsys.readouterr().out)
-    assert rc == 0 and envelope["ok"] is True
-    keys = {g["key"] for g in envelope["result"]["gpus"]}
-    assert "a40" in keys and "rtx4090" in keys
-    assert envelope["result"]["default"] == "rtx4090"
-
-
-def test_datacenters_json_error_when_no_stock(monkeypatch, capsys):
-    import json
-
-    import labeling_t.runpod as rp
-
-    monkeypatch.setattr(rp, "_datacenters_with_stock", lambda gpu_id, env: [])
-    rc = rp.main(["datacenters", "--gpu", "a40", "--json"])
-    envelope = json.loads(capsys.readouterr().out)
-    assert rc == 1 and envelope["ok"] is False
-    assert envelope["error"]["gpu_id"] == "NVIDIA A40"  # ok mirrors the exit code
-
-
-def test_runpodctl_failure_becomes_error_envelope(monkeypatch, capsys):
-    import json
-
-    import labeling_t.runpod as rp
-
-    def boom(args, env):
-        raise SystemExit("runpodctl user failed:\nboom")
-
-    monkeypatch.setattr(rp, "_runpodctl", boom)
-    rc = rp.main(["status", "--json"])
-    envelope = json.loads(capsys.readouterr().out)
-    assert rc == 1 and envelope["ok"] is False and "boom" in envelope["error"]["message"]

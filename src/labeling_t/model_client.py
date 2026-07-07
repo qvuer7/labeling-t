@@ -29,6 +29,7 @@ from pathlib import Path
 import httpx
 
 from .models import ModelSpec
+from .podstate import resolve_endpoint
 from .prelabel import RawInference
 
 _MEDIA_TYPES = {
@@ -110,13 +111,16 @@ class ChatClient:
         )
 
     @classmethod
-    def from_env(cls, spec: ModelSpec, *, categories: list[str] | None = None, **kw) -> "ChatClient":
-        """Build a client for `spec`, reading {PREFIX}_ENDPOINT / _API_KEY (the
-        endpoint falls back to the spec's baked-in default for SaaS providers)."""
-        endpoint = spec.endpoint_from_env()
-        if not endpoint:
-            raise ValueError(f"{spec.env_prefix}_ENDPOINT is not set (.env)")
-        return cls(endpoint, spec, api_key=spec.api_key_from_env(), categories=categories, **kw)
+    def from_env(cls, spec: ModelSpec, *, endpoint: str | None = None,
+                 categories: list[str] | None = None, **kw) -> "ChatClient":
+        """Build a client for `spec`. The endpoint resolves per podstate
+        precedence: explicit `endpoint` arg > recorded pod > {PREFIX}_ENDPOINT
+        env (deprecated) > the spec's baked-in default (SaaS providers).
+        The API key still comes from {PREFIX}_API_KEY."""
+        url = resolve_endpoint(spec, endpoint)
+        if not url:
+            raise ValueError(_no_endpoint_msg(spec))
+        return cls(url, spec, api_key=spec.api_key_from_env(), categories=categories, **kw)
 
     def build_payload(self, image_path: str | Path | bytes) -> dict:
         prompt = self.spec.prompt.format(categories=", ".join(self.categories))
@@ -218,11 +222,12 @@ class TransformersClient:
         )
 
     @classmethod
-    def from_env(cls, spec: ModelSpec, *, categories: list[str] | None = None, **kw) -> "TransformersClient":
-        endpoint = spec.endpoint_from_env()
-        if not endpoint:
-            raise ValueError(f"{spec.env_prefix}_ENDPOINT is not set (.env)")
-        return cls(endpoint, spec, api_key=spec.api_key_from_env(), categories=categories, **kw)
+    def from_env(cls, spec: ModelSpec, *, endpoint: str | None = None,
+                 categories: list[str] | None = None, **kw) -> "TransformersClient":
+        url = resolve_endpoint(spec, endpoint)
+        if not url:
+            raise ValueError(_no_endpoint_msg(spec))
+        return cls(url, spec, api_key=spec.api_key_from_env(), categories=categories, **kw)
 
     def build_payload(self, image_path: str | Path) -> dict:
         # image is sent as a URL the server fetches (presigned S3 passthrough), or
@@ -284,13 +289,23 @@ class TransformersClient:
         self.close()
 
 
-def client_for(spec: ModelSpec, *, categories: list[str] | None = None, **kw):
-    """Build the right transport for a spec's backend, from the environment.
+def _no_endpoint_msg(spec: ModelSpec) -> str:
+    return (
+        f"no endpoint for model {spec.key!r}: no running pod recorded "
+        f"(`labeling-t-runpod up --model {spec.key}`, or check `labeling-t-runpod "
+        f"status`), no --endpoint given, and {spec.env_prefix}_ENDPOINT is unset"
+    )
+
+
+def client_for(spec: ModelSpec, *, endpoint: str | None = None,
+               categories: list[str] | None = None, **kw):
+    """Build the right transport for a spec's backend. The endpoint resolves per
+    podstate precedence (explicit arg > recorded pod > env > spec default).
 
     The transformers backend returns structured boxes from our model-server; every
     other backend (vllm / openai / gemini) speaks OpenAI chat, so ChatClient drives
     them all. Callers stay backend-agnostic — prelabel duck-types infer vs infer_raw.
     """
     if spec.backend == "transformers":
-        return TransformersClient.from_env(spec, categories=categories, **kw)
-    return ChatClient.from_env(spec, categories=categories, **kw)
+        return TransformersClient.from_env(spec, endpoint=endpoint, categories=categories, **kw)
+    return ChatClient.from_env(spec, endpoint=endpoint, categories=categories, **kw)

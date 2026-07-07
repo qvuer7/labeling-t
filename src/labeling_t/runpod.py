@@ -4,8 +4,8 @@ Part of the framework (not a loose script): the serving recipe lives with the
 code so spinning a model up is one command, and the logic is importable/testable.
 
 CLI (installed as `labeling-t-runpod`):
-    labeling-t-runpod up           # rent GPU, serve, write endpoint -> .env
-    labeling-t-runpod status       # balance + running pods (shows pod ids)
+    labeling-t-runpod up           # rent GPU, serve, record endpoint -> .labeling-t/pods.json
+    labeling-t-runpod status       # balance + running pods (reconciles pod state)
     labeling-t-runpod down         # delete this project's pod (stop billing)
     labeling-t-runpod down <id>    # delete a specific pod (when several run)
     labeling-t-runpod down --all   # delete every labeling-t-* pod
@@ -33,11 +33,11 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Callable
 
 import httpx
 
+from . import podstate
 from .config import load_env
 from .gpu import DEFAULT_GPU, GPUS, get_pod
 from .models import ModelSpec, get_spec
@@ -136,19 +136,6 @@ def _proxy(pod_id: str) -> str:
     return f"https://{pod_id}-8000.proxy.runpod.net"
 
 
-def _write_env_endpoint(prefix: str, url: str, env_path: str | Path = ".env") -> None:
-    path = Path(env_path)
-    var = f"{prefix}_ENDPOINT"
-    lines = path.read_text().splitlines() if path.exists() else []
-    for i, ln in enumerate(lines):
-        if ln.strip().startswith(var + "="):
-            lines[i] = f"{var}={url}"
-            break
-    else:
-        lines.append(f"{var}={url}")
-    path.write_text("\n".join(lines) + "\n")
-
-
 class AmbiguousPods(Exception):
     """More than one project pod is running and no target was given — refuse to
     guess which to delete. Carries the candidate pods so callers can list them."""
@@ -172,10 +159,11 @@ def start_pod(
     env: dict | None = None,
     log: Callable[[str], None] = print,
 ) -> dict:
-    """Rent a GPU, serve `model` on vLLM, write its endpoint to .env. Returns a
-    dict {id, endpoint, cost_per_hr, terminate_after, ready, served}. `log` is a
-    progress sink (print for the CLI, a Job's log for the web UI). With wait=True
-    it polls /v1/models until the model serves or `timeout` seconds elapse."""
+    """Rent a GPU, serve `model`, record its endpoint in .labeling-t/pods.json
+    (never .env — that's secrets). Returns a dict {id, endpoint, cost_per_hr,
+    terminate_after, ready, served}. `log` is a progress sink (print for the
+    CLI, a Job's log for the web UI). With wait=True it polls the health route
+    until the model serves or `timeout` seconds elapse."""
     env = env or _env()
     spec = get_spec(model)
     hw = get_pod(gpu)
@@ -237,8 +225,14 @@ def start_pod(
     pid = pod["id"]
     url = _proxy(pid)
     log(f"created pod {pid}  (${pod.get('costPerHr')}/hr, auto-terminate {term})")
-    _write_env_endpoint(spec.env_prefix, url)
-    log(f"endpoint -> {url}  (wrote {spec.env_prefix}_ENDPOINT to .env)")
+    # Record state BEFORE the readiness wait: a timeout (or Ctrl-C) must still
+    # leave the billing pod discoverable by `status` / resolvable by inference.
+    entry = {"id": pid, "model": spec.key, "env_prefix": spec.env_prefix,
+             "endpoint": url, "gpu": hw.gpu_id, "cost_per_hr": pod.get("costPerHr"),
+             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+             "terminate_after": term, "ready": False}
+    podstate.record_pod(entry)
+    log(f"endpoint -> {url}  (recorded in {podstate.state_path()})")
     info = {"id": pid, "endpoint": url, "cost_per_hr": pod.get("costPerHr"),
             "terminate_after": term, "model": spec.key, "ready": False, "served": []}
     if not wait:
@@ -257,6 +251,7 @@ def start_pod(
                     info["served"] = [r.json().get("model")]
                     info["ready"] = True
                 if info["ready"]:
+                    podstate.record_pod({**entry, "ready": True})
                     log(f"READY — serving {info['served']}")
                     return info
         except httpx.HTTPError:
@@ -288,21 +283,37 @@ def stop_pods(env: dict | None = None, *, pods: list[str] | None = None, all: bo
         targets = ours
     for p in targets:
         _runpodctl(["pod", "delete", p["id"]], env)
+    podstate.remove_pods([p["id"] for p in targets])
     return [{"id": p["id"], "name": p.get("name")} for p in targets]
 
 
 def list_pods_with_balance(env: dict | None = None) -> dict:
-    """Account balance + running pods as structured data. Returns
-    {balance, spend_per_hr, pods: [{id, name, cost_per_hr, status}]}."""
+    """Account balance + running pods as structured data, reconciling the pod
+    state file against the live list (live = truth for existence: dead recorded
+    ids are pruned, running labeling-t-* pods we didn't record are adopted).
+    Returns {balance, spend_per_hr, stale_removed, pods: [{id, name, cost_per_hr,
+    status, model, endpoint, terminate_after, ready}]} — model/endpoint/... are
+    None for pods outside this project's state."""
     env = env or _env()
     bal = json.loads(_runpodctl(["user", "-o", "json"], env))
+    live = _pods(env)
+    rec = podstate.reconcile(
+        [{"id": p["id"], "name": p.get("name"), "cost_per_hr": p.get("costPerHr")}
+         for p in live]
+    )
+    known = rec["pods"]
     return {
         "balance": bal.get("clientBalance", 0),
         "spend_per_hr": bal.get("currentSpendPerHr", 0),
+        "stale_removed": rec["stale_removed"],
         "pods": [
             {"id": p["id"], "name": p.get("name"),
-             "cost_per_hr": p.get("costPerHr"), "status": p.get("desiredStatus")}
-            for p in _pods(env)
+             "cost_per_hr": p.get("costPerHr"), "status": p.get("desiredStatus"),
+             "model": known.get(p["id"], {}).get("model"),
+             "endpoint": known.get(p["id"], {}).get("endpoint"),
+             "terminate_after": known.get(p["id"], {}).get("terminate_after"),
+             "ready": known.get(p["id"], {}).get("ready")}
+            for p in live
         ],
     }
 
@@ -342,10 +353,17 @@ def cmd_down(a, env) -> int:
 def cmd_status(a, env) -> int:
     s = list_pods_with_balance(env)
     lines = [f"balance: ${s['balance']:.2f} | spend/hr: ${s['spend_per_hr']}"]
+    if s["stale_removed"]:
+        lines.append(f"pruned stale pod state: {', '.join(s['stale_removed'])}")
     if not s["pods"]:
         lines.append("no pods running")
     else:
-        lines += [f"  {p['id']}  {p['name']}  ${p['cost_per_hr']}/hr  {p['status']}" for p in s["pods"]]
+        lines += [
+            f"  {p['id']}  {p['name']}  ${p['cost_per_hr']}/hr  {p['status']}"
+            + (f"  {p['model']} @ {p['endpoint']} (until {p['terminate_after'] or '?'})"
+               if p["model"] else "")
+            for p in s["pods"]
+        ]
     return emit(a, s, "\n".join(lines))
 
 

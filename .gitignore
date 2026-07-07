@@ -8,6 +8,7 @@ dist/
 build/
 # data + runtime artifacts
 data/
+.labeling-t/
 failures.jsonl
 done.jsonl
 .mypy_cache/

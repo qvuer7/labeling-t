@@ -197,7 +197,11 @@ labels in S3), `import-ls-cloud` (tasks carry presigned S3 URLs + pre-annotation
 
 `labeling-t-runpod` provisions the GPU. Hardware comes from a `PodSpec` (`gpu.py`:
 rtx3090/4090/5090, a40, a100, h100), the model from a `ModelSpec`. One command
-builds the serving recipe and writes the endpoint to `.env`:
+builds the serving recipe and records the endpoint in `.labeling-t/pods.json`
+(runtime pod state, `podstate.py`; `.env` stays secrets-only — inference commands
+resolve their endpoint as `--endpoint` flag > newest recorded pod for the model >
+`{PREFIX}_ENDPOINT` env (deprecated) > the spec's baked-in SaaS default, and
+`status` reconciles the state against the live pod list):
 
 - **transformers backend** → our GHCR image (`ghcr.io/qvuer7/labeling-t-models`),
   `MODEL`/`HF_MODEL` via env, readiness on `/health` (true only after weights load).
