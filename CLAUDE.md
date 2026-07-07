@@ -14,7 +14,10 @@ Three backends behind one neutral schema:
   `MODEL` env selects adapter): `owlv2`, `locate_anything`, `sam2`.
 - **vllm** (stock image): `qwen3_vl`.
 - **hosted chat** (`ChatClient`, no GPU): `openai_vl`, `gemini_vl`.
-Provision GPUs: `labeling-t-runpod up --model <k> --gpu <preset>` (auto-retries datacenters with stock).
+Provision GPUs: `labeling-t-runpod up --model <k> --gpu <preset> --hours H --budget $`
+(auto-retries datacenters with stock; refuses duplicates — `--force` overrides).
+Endpoint state lives in `.labeling-t/pods.json` (podstate.py), NOT `.env` (secrets only);
+inference commands auto-resolve it (`--endpoint` overrides); `status --json` reconciles.
 
 ### Gotchas that cost time (don't relearn)
 - **transformers backend = `--concurrency 1`** (one GPU model, not safe under concurrent `generate`; vLLM is).
@@ -29,9 +32,10 @@ Provision GPUs: `labeling-t-runpod up --model <k> --gpu <preset>` (auto-retries 
   (OCR; specs `openai_ocr`/`gemini_ocr`, keys `OPENAI_API_KEY`/`GEMINI_API_KEY`).
 - **OpenAI rate limits**: 429s honored via Retry-After (15/30s default); `image_detail="low"` on
   OCR specs cuts image tokens ~3x. Full 2k OCR pass ≈ $1.30 total.
-- **LS export gotcha**: `from-ls-cloud` pulls only ANNOTATED tasks (`fetch_ls_export` omits
-  `download_all_tasks`). Viewed-but-unsubmitted tasks need their source predictions —
-  see `scripts/export_prefiltered_verified.py` (THROWAWAY, id-threshold export).
+- **LS export**: default export = ANNOTATED tasks only; `from-ls-cloud --include-accepted
+  --accepted-from <set>` pulls viewed-but-unsubmitted tasks too (byte-exact source copy).
+  Only id-threshold slicing of a PARTIALLY verified project still needs
+  `scripts/export_prefiltered_verified.py` (THROWAWAY).
 - **`ImageLabels.schema_version`** = "1" (absent in pre-2026-07-02 files; they load fine).
 
 ## Cloud state — `s3://ml-cv-data` (DigitalOcean Spaces, creds in `.env`, gitignored)
@@ -66,13 +70,18 @@ imported 2026-07-06 — mask-quality review) · **14 = "ipbl-1k rim boxes (verif
 Presigned frame URLs expire in ~7 days — re-run import if links die.
 Gotcha: LS project titles max **50 chars** (400 Validation error above that).
 
-## ACTIVE WORK (2026-07-06)
-1. **Mask verification** — LS project 11 ongoing; export slices via
-   `scripts/export_prefiltered_verified.py` (bump THRESHOLD) or `from-ls-cloud` when done.
-2. **OCR** — full 2k scoreboard pass done (`labels-ocr/`). Next per plan: temporal-consistency
+## ACTIVE WORK (2026-07-07)
+1. **Agent-interface plan: PR-0..PR-8 ALL IMPLEMENTED** (plans/agent-interface-plan.md) —
+   podstate + guardrails + selectors + stats/validate/diff + subsetting/progress + render +
+   --include-accepted + skill (`.claude/skills/labeling-t/`). 232 tests green.
+   NEXT: user runs the live e2e acceptance sequence (lifecycle.md) on a small dataset.
+2. **Mask verification** — LS project 11 ongoing; when done: `from-ls-cloud
+   --include-accepted --accepted-from labels-yolo-sam2`; partial slices still via
+   `scripts/export_prefiltered_verified.py` (id threshold).
+3. **OCR** — full 2k scoreboard pass done (`labels-ocr/`). Next per plan: temporal-consistency
    flagged frames (~22 score decreases) → human check → trusted eval set; then synthetic
    font-render training data for a small OCR model (out of framework scope — scripts).
-3. **Export gap** — `to-coco` is boxes-only + local-only; masks can't reach a training format
+4. **Export gap** — `to-coco` is boxes-only + local-only; masks can't reach a training format
    through the framework yet (REVIEW.md §4.2, plans/roadmap.md §1 remaining item).
 
 Scoreboard crop-region scripts (`scripts/crop_boxes.py`, `crop_relative.py`, tuned boxes for
@@ -81,15 +90,17 @@ still useful if per-digit-region OCR (Option B) is ever needed. Local data gitig
 `data/` (match_samples = 28 matches × 10 frames + mask JSONs).
 
 ## Local / git
-- On `transformers-model-server`, **merged to main and pushed 2026-07-06** (fast-forward,
-  both branches at the same commit). 166 tests pass.
-- Next work: the unified agent-interface plan (`plans/agent-interface-plan.md`), PR-1
-  (pod runtime state) onward — PR-0 (commit series) is done.
-- `data/` is gitignored (all the downloaded frames/masks/crops live there).
+- On `transformers-model-server`: agent-interface PR-1..8 committed 2026-07-07 (7 commits,
+  a213004..HEAD), NOT yet merged/pushed — pending user's live e2e test. 232 tests pass.
+- `data/` and `.labeling-t/` are gitignored (local frames/masks/crops + pod runtime state).
 
 ## Common commands
 ```bash
-uv run pytest -q                                   # 166 tests
+uv run pytest -q                                   # 232 tests
+labeling-t-runpod status --json                    # session start: pods + state reconcile
+labeling-t stats --dataset ipbl-basketball-1k --group all --set labels-combined --json
+labeling-t render --dataset ipbl-basketball-1k --group all --set labels-combined \
+    --sample 8 --out /tmp/render --json            # LOOK at labels
 labeling-t-runpod datacenters --gpu a40            # check GPU stock
 labeling-t-runpod up --model sam2 --gpu a40        # rent+serve; down <id> to stop billing
 # S3 (aws cli with DO Spaces endpoint):

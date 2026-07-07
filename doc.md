@@ -291,7 +291,33 @@ on the thin client.
 | `gpu.py` / `runpod.py` | GPU presets (WHERE) / RunPod provisioning + datacenter selection. |
 | `adapters/label_studio.py` · `adapters/coco.py` | Neutral ↔ LS (import + pull-back) · neutral → COCO via `supervision`. |
 | `cli.py` · `config.py` · `web/` | CLI entry · `.env` loading · FastAPI browser console over the pipeline. |
-| `output.py` | Agent output mode: `--json` on every subcommand of both CLIs — one `{"ok", "result"/"error"}` envelope on stdout, prose to stderr, `ok` ⇔ exit code 0. |
+| `output.py` | Agent output mode: `--json` on every subcommand of both CLIs — one `{"ok", "result"/"error"}` envelope on stdout, prose to stderr, `ok` ⇔ exit code 0; `progress_reporter` (throttled JSON progress on stderr, `--progress-file`). |
+| `podstate.py` | Runtime pod state (`.labeling-t/pods.json`): record/remove/reconcile + `resolve_endpoint` precedence. `.env` stays secrets-only. |
+| `labelset.py` | Dataset-state primitives over `Storage`: `set_stats` / `set_validate` / `set_diff` / `label_stems`. |
+| `render.py` | Visual checkpoint: label set → annotated local PNGs (boxes, captions, text, alpha masks); deterministic sampling. |
+
+---
+
+## 8b. Agent interface
+
+The CLI **is** the agent API — no parallel MCP/server layer. The affordances
+that make it drivable unattended:
+
+- **One envelope**: every subcommand takes `--json`; stdout is exactly one
+  `{"ok", "result"/"error"}` line, `ok` ⇔ rc 0, prose/progress on stderr.
+  Error payloads carry structured recovery (e.g. `error.existing.endpoint` on
+  a duplicate-pod refusal, `error.suggested_hours` over budget).
+- **No hidden mutable state**: pods live in `.labeling-t/pods.json`
+  (`podstate.py`); `status --json` reconciles against the live list; `.env`
+  is never written by the framework.
+- **State queries**: `stats` / `validate` / `diff` / `manifest` answer the
+  questions agents otherwise re-derive by hand; `render` is the visual check.
+- **Subsetting**: `--stems`/`--stems-file`/`--frames-from` make
+  sample-first-then-batch a flag, not glue code.
+- **Guardrails**: `--budget`, `--hours`, duplicate-pod refusal.
+- The Claude Code skill at `.claude/skills/labeling-t/` packages the operating
+  discipline (checkpoints, guardrails, full lifecycle recipe) for a fresh
+  agent session.
 
 ---
 
