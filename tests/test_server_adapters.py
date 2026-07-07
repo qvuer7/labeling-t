@@ -137,3 +137,51 @@ def test_dcs_for_gpu_filters_by_stock_and_ranks_best_first():
     assert out == [("EU-CZ-1", "High"), ("EU-RO-1", "Low")]
     assert _dcs_for_gpu(datacenters, "NVIDIA A40") == [("EU-RO-1", "High")]
     assert _dcs_for_gpu([], "anything") == []
+
+
+# ---- vitpose (keypoints stage) --------------------------------------------------
+
+def test_registry_returns_vitpose_unloaded():
+    from labeling_t.server.adapters import VitPoseAdapter
+
+    a = get_adapter("vitpose")
+    assert isinstance(a, VitPoseAdapter)
+    assert a.hf_model == "usyd-community/vitpose-base-simple"
+    assert a.ready is False  # nothing loads until the server calls load()
+
+
+def test_vitpose_xyxy_to_xywh():
+    from labeling_t.server.adapters.vitpose import _xyxy_to_xywh
+
+    assert _xyxy_to_xywh([[10, 20, 110, 220], [0, 0, 5, 5]]) == \
+        [[10.0, 20.0, 100.0, 200.0], [0.0, 0.0, 5.0, 5.0]]
+
+
+def test_vitpose_point_names_canonical_first():
+    from labeling_t.server.adapters.vitpose import COCO_17_NAMES, _point_names
+
+    # 17 points -> OUR canonical names, regardless of the checkpoint's id2label
+    assert _point_names(17, {0: "Nose"}) == list(COCO_17_NAMES)
+    # non-17 skeleton -> the model's own names, lowercased
+    assert _point_names(2, {0: "Head", 1: "Tail"}) == ["head", "tail"]
+    # no id2label -> positional
+    assert _point_names(2, None) == ["kp_0", "kp_1"]
+
+
+def test_vitpose_to_wire_keypoints_clamps_scores():
+    from labeling_t.server.adapters.vitpose import _to_wire_keypoints
+
+    kps = _to_wire_keypoints([(10.5, 20.5), (30.0, 40.0)], [1.2, 0.5], ["a", "b"])
+    assert kps == [{"x": 10.5, "y": 20.5, "name": "a", "score": 1.0},
+                   {"x": 30.0, "y": 40.0, "name": "b", "score": 0.5}]
+    # scoreless pose result -> no score key at all
+    assert _to_wire_keypoints([(1, 2)], None, ["a"]) == [{"x": 1.0, "y": 2.0, "name": "a"}]
+
+
+def test_wire_detection_carries_optional_keypoints():
+    from labeling_t.server.contract import WireDetection
+
+    d = WireDetection(bbox=[0, 0, 10, 10], label="player",
+                      keypoints=[{"x": 1, "y": 2, "name": "nose", "score": 0.9}])
+    assert d.keypoints[0]["name"] == "nose"
+    assert WireDetection(bbox=[0, 0, 1, 1], label="x").keypoints is None

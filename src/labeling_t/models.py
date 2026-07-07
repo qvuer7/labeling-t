@@ -239,6 +239,23 @@ SAM2 = ModelSpec(
     hf_model="facebook/sam2.1-hiera-large",
 )
 
+# VitPose (top-down pose) — the KEYPOINTS stage, not a detector. Takes box
+# prompts (a detector's `player` boxes) and returns a skeleton per box, served
+# by OUR transformers model-server (transformers-native VitPoseForPoseEstimation,
+# plain torch — same slim image as SAM2). Boxes/labels arrive per call in
+# `params`; no text query, no default categories. Default weights = the
+# single-dataset COCO-17 variant (MoE variants need dataset_index; add iff a
+# non-COCO skeleton is ever wanted).
+VITPOSE = ModelSpec(
+    key="vitpose",
+    name="vitpose",
+    env_prefix="VITPOSE",
+    prompt="",
+    coord_space="abs",                    # keypoints/boxes in absolute pixels
+    backend="transformers",
+    hf_model="usyd-community/vitpose-base-simple",
+)
+
 REGISTRY: dict[str, ModelSpec] = {
     LOCATE_ANYTHING.key: LOCATE_ANYTHING,
     QWEN3_VL.key: QWEN3_VL,
@@ -248,6 +265,7 @@ REGISTRY: dict[str, ModelSpec] = {
     OPENAI_OCR.key: OPENAI_OCR,
     GEMINI_OCR.key: GEMINI_OCR,
     SAM2.key: SAM2,
+    VITPOSE.key: VITPOSE,
 }
 
 

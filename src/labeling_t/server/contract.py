@@ -32,6 +32,10 @@ class WireDetection(BaseModel):
     # SAME wire shape so a box and its mask travel together (two-stage: detector
     # box -> SAM2 mask), and COCO export gets `segmentation` for free later.
     mask: dict | None = None
+    # Optional keypoints, [{x, y, name, score?}] in abs pixels of the original
+    # image. Only the pose stage (VitPose) fills this — same ride-along rule as
+    # mask: a box and its skeleton travel together.
+    keypoints: list[dict] | None = None
 
 
 class InferResponse(BaseModel):
