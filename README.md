@@ -39,10 +39,23 @@ v0.x, working end-to-end on real basketball footage. **Boxes + masks, images onl
 
 ## Install
 
+Fresh machine (or a fresh coding-agent session) — everything needed to operate
+ships in the repo (`CLAUDE.md`, the Claude Code skill in `.claude/skills/`,
+`uv.lock`); only the secrets travel out-of-band:
+
 ```bash
-uv sync --extra integrations --extra cloud
-uv run pytest -q
+# 1. binaries (no sudo): uv always, runpodctl only for GPU provisioning
+curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -fsSL https://github.com/runpod/runpodctl/releases/latest/download/runpodctl-linux-amd64      -o ~/.local/bin/runpodctl && chmod +x ~/.local/bin/runpodctl
+
+# 2. code + env (uv run auto-syncs the venv from uv.lock on first use)
+git clone https://github.com/qvuer7/labeling-t.git && cd labeling-t
+cp .env.example .env        # then fill in the secrets
+uv run pytest -q            # verify
 ```
+
+Working in this checkout directly: `uv sync --extra integrations --extra cloud`
+once, or just prefix every command with `uv run`.
 
 ## Commands
 

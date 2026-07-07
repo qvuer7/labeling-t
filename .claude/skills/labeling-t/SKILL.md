@@ -9,13 +9,31 @@ Two CLIs, one contract: `labeling-t-runpod` provisions GPU pods, `labeling-t`
 runs the pipeline stages. Architecture: `doc.md`. Current dataset state:
 `CLAUDE.md`.
 
+## Prerequisites (check, self-install if missing)
+
+Two external binaries are hard dependencies — verify both before the first
+command and install whichever is absent (no sudo needed):
+
+```bash
+uv --version || curl -LsSf https://astral.sh/uv/install.sh | sh   # installs to ~/.local/bin
+runpodctl --version || {   # needed ONLY for GPU provisioning (up/down/status/datacenters)
+  mkdir -p ~/.local/bin && \
+  curl -fsSL https://github.com/runpod/runpodctl/releases/latest/download/runpodctl-linux-amd64 \
+       -o ~/.local/bin/runpodctl && chmod +x ~/.local/bin/runpodctl
+}
+export PATH="$HOME/.local/bin:$PATH"   # if either was just installed
+```
+
+Python deps are NOT a separate step: `uv run` auto-syncs the venv from
+`uv.lock` (first run after a fresh clone installs for a minute).
+Secrets: `.env` at the repo root (`cp .env.example .env` and ask the user for
+values) — the framework never writes it. RunPod auth = `RUNPOD_API_KEY` there.
+
 ## Session start (always)
 
 0. Run every command as **`uv run labeling-t …` / `uv run labeling-t-runpod …`
-   from the repo root**. The CLIs are project scripts living in this repo's
-   venv — `uv run` auto-syncs the environment (no separate `uv sync` needed;
-   the first run after a fresh clone just installs for a minute). Bare
-   `labeling-t` works only inside an activated venv.
+   from the repo root** — the CLIs are project scripts living in this repo's
+   venv; bare `labeling-t` works only inside an activated venv.
 1. `labeling-t-runpod status --json` — reconciles pod state: prunes dead pods
    from `.labeling-t/pods.json`, adopts running `labeling-t-*` pods, and shows
    `model` / `endpoint` / `terminate_after` per pod. Run it before assuming
