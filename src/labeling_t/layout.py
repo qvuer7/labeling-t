@@ -59,5 +59,23 @@ class DatasetLayout:
         leaf = f"verified-{name}" if name else "verified"
         return f"{self.root}/{leaf}/{group}".rstrip("/")
 
+    def set_prefix(self, group: str, selector: str) -> str:
+        """Prefix for a label SET named by its storage leaf — the one selector
+        vocabulary agents use to point a command at any set:
+
+            labels | labels-<name> | verified | verified-<name>
+
+        (i.e. exactly what `aws s3 ls` shows under the dataset root). Consumed
+        by stats/validate/diff, --frames-from, --accepted-from, render.
+        ValueError on anything else, so a typo'd set name fails loudly instead
+        of scanning an empty prefix."""
+        stage, dash, name = selector.partition("-")
+        if stage not in ("labels", "verified") or (dash and not name):
+            raise ValueError(
+                f"invalid set selector {selector!r}: expected labels, labels-<name>, "
+                "verified, or verified-<name>"
+            )
+        return f"{self.root}/{selector}/{group}".rstrip("/")
+
     def export(self, version: str) -> str:
         return f"{self.root}/export/{version}".rstrip("/")

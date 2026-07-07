@@ -32,3 +32,25 @@ def test_from_env_falls_back_to_local(monkeypatch):
 
 def test_base_trailing_slash_stripped():
     assert DatasetLayout.from_env("d", base="s3://b/").root == "s3://b/datasets/d"
+
+
+def test_set_prefix_selector_vocabulary():
+    lo = DatasetLayout(dataset="d", base="s3://b")
+    # the selector IS the storage leaf name — what `s3 ls` shows under the root
+    assert lo.set_prefix("g", "labels") == "s3://b/datasets/d/labels/g"
+    assert lo.set_prefix("g", "labels-rim") == "s3://b/datasets/d/labels-rim/g"
+    assert lo.set_prefix("g", "verified") == "s3://b/datasets/d/verified/g"
+    assert lo.set_prefix("g", "verified-masks") == "s3://b/datasets/d/verified-masks/g"
+    assert lo.set_prefix("g", "labels-a-b") == "s3://b/datasets/d/labels-a-b/g"
+    # agrees with the writing-side helpers, so selectors always join
+    assert lo.set_prefix("g", "labels-rim") == lo.labels("g", "rim")
+    assert lo.set_prefix("g", "verified-masks") == lo.verified("g", "masks")
+
+
+def test_set_prefix_rejects_bad_selectors():
+    import pytest
+
+    lo = DatasetLayout(dataset="d", base="s3://b")
+    for bad in ("frames", "export", "labelsrim", "labels-", "verified-", "", "Labels"):
+        with pytest.raises(ValueError):
+            lo.set_prefix("g", bad)

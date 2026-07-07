@@ -182,6 +182,15 @@ no manifest needed. **`--labels-name`** namespaces a second model's pre-labels
 into `labels-<name>/` so several models coexist without clobbering (e.g.
 LocateAnything in `labels-locateanything/` while Qwen stays in `labels/`).
 
+**Set selectors** (`DatasetLayout.set_prefix`): commands that point at an
+existing label set take the storage leaf name as a neutral selector —
+`labels`, `labels-<name>`, `verified`, `verified-<name>` — exactly what a
+bucket listing shows under the dataset root. A typo'd selector is a loud
+ValueError, not an empty scan. `manifest.json` indexes every set:
+`namespaces` (per-set per-group counts) + `namespace_totals` + `generated_at`
+alongside the legacy `groups`/`totals` (which cover only frames + the two
+default sets).
+
 Cloud commands (`labeling-t …`): `prelabel-cloud` (presigned frame URL → model →
 labels in S3), `import-ls-cloud` (tasks carry presigned S3 URLs + pre-annotations),
 `from-ls-cloud` (verified labels back to S3), `to-coco`.

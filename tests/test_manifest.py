@@ -42,3 +42,24 @@ def test_load_manifest_roundtrip(tmp_path):
     assert load_manifest("d", base=base, storage=st) is None  # none yet
     build_manifest("d", base=base, storage=st, categories=["x"])
     assert load_manifest("d", base=base, storage=st)["categories"] == ["x"]
+
+
+def test_named_namespaces_are_counted(tmp_path):
+    st, base = _seed(tmp_path)
+    lo = DatasetLayout("d", base=base)
+    st.write_text(f"{lo.labels('g1', 'rim')}/g1_00000.json", "{}")
+    st.write_text(f"{lo.labels('g1', 'rim')}/g1_00001.json", "{}")
+    st.write_text(f"{lo.verified('g2', 'masks')}/g2_00000.json", "{}")
+    # failure sidecars are .jsonl, never label files -> invisible in every count
+    st.write_text(f"{lo.labels('g1', 'rim')}/segment_failures.jsonl", "{}")
+    m = build_manifest("d", base=base, storage=st)
+    assert m["namespaces"]["labels-rim"] == {"g1": 2}
+    assert m["namespaces"]["verified-masks"] == {"g2": 1}
+    assert m["namespaces"]["labels"] == {"g1": 1}
+    assert m["namespaces"]["frames"] == {"g1": 2, "g2": 1}
+    assert m["namespace_totals"] == {"frames": 3, "labels": 1, "labels-rim": 2,
+                                     "verified-masks": 1}
+    assert m["generated_at"].endswith("Z")
+    # legacy view unchanged: named sets do NOT leak into groups/totals
+    assert m["totals"] == {"frames": 3, "labels": 1, "verified": 0, "groups": 2}
+    assert "labels-rim" not in m["groups"].get("g1", {})
