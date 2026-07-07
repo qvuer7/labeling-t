@@ -157,12 +157,13 @@ def _cmd_import_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - ne
     if not uris:
         return fail(a, f"no labels under {labels_prefix} (run prelabel-cloud first)")
     images = [ImageLabels.model_validate_json(storage.read_bytes(u).decode()) for u in uris]
+    control = "keypoint" if a.keypoints else (a.mask_format if a.masks else "rectangle")
     try:
         project = import_to_label_studio(
             images, base_url=a.url, api_key=a.api_key, project_title=a.project,
             categories=a.categories,
             presign=lambda uri: storage.presigned_url(uri, a.ttl),  # frame URI -> presigned URL
-            control=a.mask_format if a.masks else "rectangle",
+            control=control,
         )
     except ValueError as exc:  # e.g. project title over LS's length limit
         return fail(a, str(exc))
@@ -774,6 +775,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="verify SAM2 masks instead of boxes (see --mask-format)")
     ic.add_argument("--mask-format", choices=["polygon", "brush"], default="polygon",
                     help="with --masks: polygon (editable, default) or brush (raster mask)")
+    ic.add_argument("--keypoints", action="store_true",
+                    help="keypoint labeling project (KeyPointLabels): --categories are the POINT "
+                         "names; Detection.keypoints (when present) become draggable pre-annotations")
     ic.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     ic.add_argument("--ttl", type=int, default=604800, help="presigned URL lifetime seconds (default 7d)")
     ic.set_defaults(func=_cmd_import_ls_cloud)

@@ -24,11 +24,12 @@ import os
 from typing import Callable
 from xml.sax.saxutils import quoteattr
 
-from ..geometry import abs_to_percent, percent_to_abs, polygon_to_rle, rle_to_polygon
+from ..geometry import abs_to_percent, percent_to_abs, point_abs_to_percent, polygon_to_rle, rle_to_polygon
 from ..schema import BBox, Detection, ImageLabels
 
 # LS control tag per annotation kind; `control` selects which one a project uses.
-_CONTROLS = {"rectangle": "RectangleLabels", "polygon": "PolygonLabels", "brush": "BrushLabels"}
+_CONTROLS = {"rectangle": "RectangleLabels", "polygon": "PolygonLabels", "brush": "BrushLabels",
+             "keypoint": "KeyPointLabels"}
 
 
 def _image_ref(
@@ -125,10 +126,34 @@ def _brush_result(det: Detection, width: int, height: int, from_name: str, to_na
     }
 
 
-_RESULT_FNS = {"polygon": _polygon_result, "brush": _brush_result}
+def _keypoint_results(det: Detection, width: int, height: int,
+                      from_name: str, to_name: str) -> list[dict] | None:
+    """One `keypointlabels` region PER KEYPOINT of the detection (LS keypoints
+    are single-point regions; the label value is the point NAME, so the
+    project's category list must be the point names). None when the detection
+    carries no keypoints. `width` in the value is the point marker diameter as
+    a percent of image width — cosmetic, not data."""
+    if not det.keypoints:
+        return None
+    out = []
+    for k in det.keypoints:
+        pct = point_abs_to_percent(k.x, k.y, width, height)
+        out.append({
+            "type": "keypointlabels",
+            "from_name": from_name, "to_name": to_name,
+            "original_width": width, "original_height": height, "image_rotation": 0,
+            "value": {"x": pct["x"], "y": pct["y"], "width": 0.5,
+                      "keypointlabels": [k.name]},
+        })
+    return out
+
+
+_RESULT_FNS = {"polygon": _polygon_result, "brush": _brush_result, "keypoint": _keypoint_results}
 
 
 def _result_item(det, width, height, from_name, to_name, control: str = "rectangle"):
+    """A detection's LS result item(s): one dict for region kinds, a LIST for
+    keypoints (one region per point), None when there is nothing to emit."""
     return _RESULT_FNS.get(control, _rect_result)(det, width, height, from_name, to_name)
 
 
@@ -152,10 +177,11 @@ def to_label_studio_tasks(
     """
     tasks = []
     for img in images:
-        results = [
-            r for d in img.detections
-            if (r := _result_item(d, img.width, img.height, from_name, to_name, control)) is not None
-        ]
+        results = []
+        for d in img.detections:
+            r = _result_item(d, img.width, img.height, from_name, to_name, control)
+            if r is not None:
+                results.extend(r if isinstance(r, list) else [r])
         scores = [d.score for d in img.detections if d.score is not None]
         prediction: dict = {"model_version": model_version, "result": results}
         if scores:

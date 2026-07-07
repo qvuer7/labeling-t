@@ -56,12 +56,16 @@ Dataset **`datasets/ipbl-basketball-1k/`** (2000 frames, 28 matches). CLEANED 20
 Deleted 2026-07-06 (all verified byte-identical-in-combined or superseded): `verified-reviewed-clean`,
 `labels-filtered`, `pre-filtered-verified`, `labels-yolo-seg` — don't look for them.
 
-Also `datasets/ipbl-basketball/` = raw parent pool (13,265 frames, 28 groups, no labels) and
+Also `datasets/ipbl-scoreboard-kp/` (200 frames + seeded keypoint labels, 5 games, for
+LS project 17) and `datasets/ipbl-basketball/` = raw parent pool (13,265 frames, 28 groups, no labels) and
 `streams/` = 147 raw videos (12.9 GB).
 
 ## Label Studio
 Hosted at `LS_URL` (`.env`), token `LS_API_KEY`. Login `admin@labeling-t.local` / droplet password.
-Relevant projects: **16 = "ipbl-seg latest labels (brush)"** (1488 tasks from
+Relevant projects: **17 = "ipbl scoreboard keypoints (type2 mix)"** (200 frames from 5
+games, seeded home/away/timer points at type-2 centers — drag to correct; dataset
+`ipbl-scoreboard-kp`, created 2026-07-07; pull-back needs K5's from-ls keypoint parsing) ·
+**16 = "ipbl-seg latest labels (brush)"** (1488 tasks from
 datasets/ipbl-basketball-seg/labels — flat set, `--group ""`; created 2026-07-07) ·
 **15 = "ipbl-1k rim masks (brush)"** (1125 SAM2 masks on verified rim boxes,
 imported 2026-07-06 — mask-quality review) · **14 = "ipbl-1k rim boxes (verify before SAM2)"**

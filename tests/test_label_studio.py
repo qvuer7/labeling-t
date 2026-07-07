@@ -199,3 +199,40 @@ def test_import_rejects_overlong_project_title():
     with pytest.raises(ValueError, match="50"):
         import_to_label_studio([], base_url="http://x", api_key="k",
                                project_title="x" * 51, categories=["player"])
+
+
+def test_keypoint_config_and_tasks_emit_point_regions():
+    from labeling_t.adapters.label_studio import generate_label_config, to_label_studio_tasks
+    from labeling_t.schema import Keypoint
+
+    cfg = generate_label_config(["home", "away", "timer"], control="keypoint")
+    assert "<KeyPointLabels" in cfg and '<Label value="home"/>' in cfg
+
+    img = ImageLabels(
+        image_path="s3://b/frames/all/f1.jpg", width=1280, height=720,
+        detections=[Detection(
+            bbox=BBox(x1=70, y1=570, x2=405, y2=640), category="scoreboard",
+            keypoints=[Keypoint(x=265, y=622.5, name="home"),
+                       Keypoint(x=91.5, y=581.5, name="timer")],
+        ), Detection(bbox=BBox(x1=0, y1=0, x2=10, y2=10), category="scoreboard")],  # no kps -> skipped
+    )
+    (task,) = to_label_studio_tasks([img], control="keypoint",
+                                    presign=lambda uri: "https://signed/" + uri.rsplit("/", 1)[-1])
+    results = task["predictions"][0]["result"]
+    assert [r["type"] for r in results] == ["keypointlabels", "keypointlabels"]
+    home, timer = results
+    # percent of 1280x720, one region per point, label = the POINT name
+    assert home["value"]["keypointlabels"] == ["home"]
+    assert abs(home["value"]["x"] - 265 / 1280 * 100) < 1e-9
+    assert abs(home["value"]["y"] - 622.5 / 720 * 100) < 1e-9
+    assert timer["value"]["keypointlabels"] == ["timer"]
+    assert task["data"]["image"] == "https://signed/f1.jpg"
+
+
+def test_keypoint_tasks_with_no_keypoints_have_empty_predictions():
+    from labeling_t.adapters.label_studio import to_label_studio_tasks
+
+    img = ImageLabels(image_path="f.jpg", width=100, height=100,
+                      detections=[Detection(bbox=BBox(x1=0, y1=0, x2=10, y2=10), category="c")])
+    (task,) = to_label_studio_tasks([img], control="keypoint")
+    assert task["predictions"][0]["result"] == []  # label-from-scratch project
