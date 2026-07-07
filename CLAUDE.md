@@ -57,12 +57,15 @@ Deleted 2026-07-06 (all verified byte-identical-in-combined or superseded): `ver
 `labels-filtered`, `pre-filtered-verified`, `labels-yolo-seg` — don't look for them.
 
 Also `datasets/ipbl-scoreboard-kp/` (200 frames + seeded keypoint labels, 5 games, for
-LS project 17) and `datasets/ipbl-basketball/` = raw parent pool (13,265 frames, 28 groups, no labels) and
+LS project 17), `datasets/ipbl-court-kp/` (same frames, empty court labels, LS project 18) and `datasets/ipbl-basketball/` = raw parent pool (13,265 frames, 28 groups, no labels) and
 `streams/` = 147 raw videos (12.9 GB).
 
 ## Label Studio
 Hosted at `LS_URL` (`.env`), token `LS_API_KEY`. Login `admin@labeling-t.local` / droplet password.
-Relevant projects: **17 = "ipbl scoreboard keypoints (type2 mix)"** (200 frames from 5
+Relevant projects: **18 = "ipbl court keypoints (29pt)"** (same 200 frames as 17, dataset
+`ipbl-court-kp`; 29 index-prefixed court points, 0-4 mid / 5-16 near end / 17-28 far end
+"_far"; 15/27+16/28 names INFERRED — arc_junction_right/arc_top; label only visible points) ·
+**17 = "ipbl scoreboard keypoints (type2 mix)"** (200 frames from 5
 games, seeded home/away/timer points at type-2 centers — drag to correct; dataset
 `ipbl-scoreboard-kp`, created 2026-07-07; pull-back needs K5's from-ls keypoint parsing) ·
 **16 = "ipbl-seg latest labels (brush)"** (1488 tasks from
