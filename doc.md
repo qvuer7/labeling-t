@@ -223,7 +223,10 @@ default sets).
 
 Cloud commands (`labeling-t …`): `prelabel-cloud` (presigned frame URL → model →
 labels in S3), `import-ls-cloud` (tasks carry presigned S3 URLs + pre-annotations),
-`from-ls-cloud` (verified labels back to S3), `to-coco`.
+`from-ls-cloud` (verified labels back to S3; `--include-accepted
+--accepted-from <set>` also pulls viewed-but-unsubmitted tasks by copying their
+source prediction file byte-exact — LS's default export contains ONLY annotated
+tasks), `to-coco`.
 
 > **Concurrency note:** the transformers model-server serves **one model on one
 > GPU** and is *not* safe under concurrent `generate()` (unlike vLLM, which

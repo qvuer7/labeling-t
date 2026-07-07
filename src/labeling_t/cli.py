@@ -216,14 +216,23 @@ def _cmd_from_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - need
     from .layout import DatasetLayout
     from .verify import pull_verified
 
-    n = pull_verified(
-        a.dataset, a.group, url=a.url, api_key=a.api_key,
-        project_id=a.project_id, base=a.base, name=a.name,
-        on_progress=progress_reporter(a, "from-ls-cloud"),
-    )
+    try:
+        res = pull_verified(
+            a.dataset, a.group, url=a.url, api_key=a.api_key,
+            project_id=a.project_id, base=a.base, name=a.name,
+            include_accepted=a.include_accepted, accepted_from=a.accepted_from,
+            on_progress=progress_reporter(a, "from-ls-cloud"),
+        )
+    except ValueError as exc:
+        return fail(a, str(exc))
     verified_prefix = DatasetLayout.from_env(a.dataset, base=a.base).verified(a.group, a.name)
-    rc = emit(a, {"pulled": n, "prefix": verified_prefix},
-              f"pulled {n} verified labels -> {verified_prefix}")
+    extra = f" ({res['corrected']} corrected + {res['accepted']} accepted)" if a.include_accepted else ""
+    if res["missing_source"]:
+        note(a, f"warning: {len(res['missing_source'])} accepted tasks have no source file "
+                f"in {a.accepted_from} — not pulled: {', '.join(res['missing_source'][:10])}"
+                + (" …" if len(res["missing_source"]) > 10 else ""))
+    rc = emit(a, {**res, "prefix": verified_prefix},
+              f"pulled {res['pulled']} verified labels{extra} -> {verified_prefix}")
     _refresh_manifest(a.dataset, a.base)
     return rc
 
@@ -707,6 +716,12 @@ def build_parser() -> argparse.ArgumentParser:
     fc.add_argument("--project-id", required=True, help="LS project id (from import-ls-cloud output)")
     fc.add_argument("--name", default="", help="namespace the verified output into verified-<name>/ "
                     "(e.g. masks), to not overwrite the box-verified verified/")
+    fc.add_argument("--include-accepted", action="store_true",
+                    help="also treat tasks WITHOUT an annotation as verified-by-viewing: their "
+                         "source prediction file is copied verbatim (requires --accepted-from)")
+    fc.add_argument("--accepted-from", default="",
+                    help="set selector the LS project's predictions were imported from "
+                         "(e.g. labels-yolo-sam2) — the copy source for accepted tasks")
     fc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     fc.set_defaults(func=_cmd_from_ls_cloud)
 

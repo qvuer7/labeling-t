@@ -1,5 +1,10 @@
 """THROWAWAY — export a task-id-bounded slice of an LS project as verified labels.
 
+SUPERSEDED except for the id threshold: `from-ls-cloud --include-accepted
+--accepted-from <selector>` now does the corrected+accepted pull in the
+framework. Only the one-off id<THRESHOLD slicing rule (below) keeps this
+script alive — use it solely while a project is PARTIALLY verified.
+
 One-off rule (2026-07-02): in LS project 11, every task with id < THRESHOLD has
 been human-verified — tasks WITH annotations were corrected, tasks without were
 viewed and accepted as-is (their prediction IS the verified truth). The

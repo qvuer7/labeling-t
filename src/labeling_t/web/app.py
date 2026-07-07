@@ -225,12 +225,12 @@ def create_app() -> FastAPI:
                 raise ValueError("no Label Studio project for this dataset/group "
                                  "(run 'Send to Label Studio' first)")
             job.log(f"pulling verified labels from LS project {project_id}")
-            n = pull_verified(
+            res = pull_verified(
                 req.dataset, req.group, url=url, api_key=key,
                 project_id=project_id, base=None, on_progress=job.set_progress,
             )
             build_manifest(req.dataset, base=None)
-            return {"verified": n, "project_id": project_id}
+            return {"verified": res["pulled"], "project_id": project_id}
 
         return jobs.submit("verify", run).snapshot()
 

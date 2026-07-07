@@ -38,8 +38,9 @@ is the contract; everything else is a swappable adapter.
 specs) → `Detection.text`; 429 backoff, `image_detail:low`, per-detection resume.
 Follow-ups when needed:
 - [ ] Label Studio per-region TextArea verification for `Detection.text`.
-- [ ] `from-ls-cloud --include-accepted`: treat viewed-but-unsubmitted LS tasks
-      as verified (pull their predictions) — today only annotated tasks return.
+- [x] `from-ls-cloud --include-accepted --accepted-from <set>`: viewed-but-
+      unsubmitted LS tasks pulled as verified (source prediction file copied
+      byte-exact) — shipped 2026-07-07.
 
 ### 2. Make the transformers backend fast & safe under load
 Today it's `--concurrency 1` (one model, one GPU, not reentrant).
