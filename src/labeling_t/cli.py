@@ -465,7 +465,8 @@ def _resolve_set(a: argparse.Namespace, *, dir_attr: str = "labels",
     if directory:
         prefix = directory.rstrip("/")
         return directory, prefix, LocalStorage()
-    if not (a.dataset and a.group and selector):
+    # group="" is legal: a flat set living directly under <root>/<selector>/
+    if not (a.dataset and a.group is not None and selector):
         raise ValueError(f"name a set: either --{dir_attr} DIR, or --dataset D --group G --{sel_attr} "
                          "SELECTOR (labels | labels-<name> | verified | verified-<name>)")
     prefix = DatasetLayout.from_env(a.dataset, base=a.base).set_prefix(a.group, selector)

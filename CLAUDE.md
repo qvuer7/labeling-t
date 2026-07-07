@@ -61,7 +61,9 @@ Also `datasets/ipbl-basketball/` = raw parent pool (13,265 frames, 28 groups, no
 
 ## Label Studio
 Hosted at `LS_URL` (`.env`), token `LS_API_KEY`. Login `admin@labeling-t.local` / droplet password.
-Relevant projects: **15 = "ipbl-1k rim masks (brush)"** (1125 SAM2 masks on verified rim boxes,
+Relevant projects: **16 = "ipbl-seg latest labels (brush)"** (1488 tasks from
+datasets/ipbl-basketball-seg/labels — flat set, `--group ""`; created 2026-07-07) ·
+**15 = "ipbl-1k rim masks (brush)"** (1125 SAM2 masks on verified rim boxes,
 imported 2026-07-06 — mask-quality review) · **14 = "ipbl-1k rim boxes (verify before SAM2)"**
 (1159; VERIFIED 1125, pulled to verified-rim/ + segmented → labels-rim-verified/; done) ·
 **13 = "ipbl-1k hoop frames (brush)"** (1159) ·

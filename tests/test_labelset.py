@@ -174,3 +174,15 @@ def test_cli_stats_bad_selector_fails_loudly(tmp_path, capsys):
                "--base", str(tmp_path), "--json"])
     envelope = json.loads(capsys.readouterr().out)
     assert rc == 1 and "invalid set selector" in envelope["error"]["message"]
+
+
+def test_cli_stats_flat_set_empty_group(tmp_path, capsys):
+    # a label set living directly under <root>/labels/ (no group folder) is
+    # addressable with --group "" — real case: datasets/ipbl-basketball-seg
+    base = str(tmp_path)
+    LocalStorage().write_text(f"{base}/datasets/d/labels/f1.json",
+                              _img("f1", dets=[_det()]).model_dump_json())
+    rc = main(["stats", "--dataset", "d", "--group", "", "--set", "labels",
+               "--base", base, "--json"])
+    envelope = json.loads(capsys.readouterr().out)
+    assert rc == 0 and envelope["result"]["files"] == 1
