@@ -94,7 +94,12 @@ deleted — 689 clips labeled locally 2026-07-14 across 6 batches: 386 make / 26
 
 ## Label Studio
 Hosted at `LS_URL` (`.env`), token `LS_API_KEY`. Login `admin@labeling-t.local` / droplet password.
-Relevant projects: **20 = "IPBL court keypoints — anchors v2"** (706 PRO-league court-visible
+Relevant projects: **36 = "farfem-v1 pseudo-seg verify (brush)"** (2186 tasks; yolo26x_1280
+pseudo-labels from `training/ipbl-basketball-seg/farfem-v1` [ipbl agent's export, PRO
+far/female venues] converted via `scripts/yolo_seg_to_labelset.py` THROWAWAY into
+`datasets/ipbl-basketball-seg/{frames,labels-farfem-v1}/farfem/`; created 2026-08-04;
+pull back: `from-ls-cloud --dataset ipbl-basketball-seg --group farfem --project-id 36
+--name farfem-v1 --masks`) · **20 = "IPBL court keypoints — anchors v2"** (706 PRO-league court-visible
 frames per `ipbl-basketball-seg/venue_types.csv`; 18 clicked anchors + 2 arc-sample labels,
 exact config/instructions from vsoccer `court_reg_refs/labelstudio_project_instructions.md`;
 empty set `labels-pro-court-anchors/all`; export = JSON-MIN, coords in PERCENT; created
