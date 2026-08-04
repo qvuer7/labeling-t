@@ -1,10 +1,12 @@
-# ml-cv-data bucket restructure — plan (2026-08-04)
+# ml-cv-data bucket restructure — plan v2 (2026-08-04)
 
-**Status: PROPOSAL — nothing moved yet.** Location/naming changes below need
-sign-off from the agent working on ipbl training/experiments before any
-`aws s3 mv` runs, because moves break hardcoded paths in that work.
+**Status: AGREED IN PRINCIPLE — reviewed by the ipbl training agent; their
+three corrections + question answers are folded in below. Nothing moved yet.**
+Execution is gated per the sequencing section; every move is
+**copy → verify → repoint → delete**, never a bare `mv` (the 07-20 seg move
+left a dead fetch-script path for a week — that failure mode is designed out).
 
-## Goal (the honest one)
+## Goal
 
 Efficient storage of everything that is **labelled or partially labelled**:
 for any data point that has been labelled *in any way* (box, mask, keypoints,
@@ -14,37 +16,11 @@ guessing prefixes.
 
 Two mechanisms deliver that:
 1. **Zones + one strict contract** — labels only ever live under
-   `datasets/<name>/` in `layout.py` shape, so there is exactly one place to
-   look and one join rule (same filename stem = same data point across
-   frames/labels/verified sets).
-2. **A queryable index** — the manifest, extended to cover *all* label sets
-   (today it ignores `labels-<name>`/`verified-<name>`, which is where most
-   real labels live), plus a bucket-level listing command.
-
-## Current state (live listing, 2026-08-04)
-
-Conforming to `layout.py` (labels retrievable today):
-
-| prefix | sets | note |
-|---|---|---|
-| `datasets/ipbl-basketball-1k` | labels-combined (1532, THE training set), labels-ocr-clean (2000), labels-hoop, labels-yolo-sam2, verified | fully conformant |
-| `datasets/ipbl-basketball-seg` | labels (flat, group ""), labels-v2, labels-sam3-court-final (+ deletable prompt-iteration leftovers) | conformant |
-| `datasets/ipbl-scoreboard-kp`, `ipbl-court-kp` | seeded keypoint sets | conformant |
-| `datasets/offroad-seg` | frames/ + labels-v15 | conformant except stray `classes.json` at root |
-| `streams/<match-id>/` | — | raw zone, immutable, fine as-is |
-
-NOT conforming (labels exist but are not framework-addressable):
-
-| prefix | what it is | problem |
-|---|---|---|
-| `datasets/ipbl-court-pose` | images/ + labels/ + dataset.yaml + seed-arc-v1/ + vlad-far-bench/ | `images/` not `frames/`; YOLO export mixed into labeling dataset |
-| `datasets/ipbl-player-pose` | pseudo-v1/, verify-v1/ | home-grown stage names instead of `labels-*` / `verified-*` |
-| `datasets/ipbl-rim-crops` | label-v1/, label-v2/, ball_sidecars/, rich28/, sealed3_rich28/, test_rich28/, newdata_rich28/, pretrain_frames/ | 7 ad-hoc prefixes; `label-v1` ≠ `labels-v1` so set selectors reject it |
-| `datasets/ipbl-court-gt` | classic/, human_v3/, v3/, *_holdout/, selfharvest/ | versioned *training* dataset, not a label-set layout |
-| `datasets/ipbl-reid` | v1/, v2/, group_*/ | same — training dataset |
-| `models/` vs `weights/` | 6 model dirs vs 1 | split-brain; move to weights/ was decided 2026-07-20 but models/ kept growing |
-| `offroad-seg/` (top level) | checkpoints, embeddings, experiments_* | whole experiment workspace shadowing `datasets/offroad-seg` |
-| `files-exchange/`, `eval/`, `inference/`, `demos/` | scratch, run outputs, kits.json, renders | no rules declared (mostly fine, just undocumented) |
+   `datasets/<name>/` in `layout.py` shape; same filename stem = same data
+   point across frames/labels/verified sets.
+2. **A queryable index** — manifest v2 covering *all* label sets (today the
+   manifest ignores `labels-<name>`/`verified-<name>`, where most real labels
+   live), plus bucket-level listing and per-stem lookup commands.
 
 ## Target structure — zones
 
@@ -58,71 +34,120 @@ s3://ml-cv-data/
       export/<version>/                  anything else = lint error
       manifest.json
   training/<name>/<version>/     TRAINING SETS — versioned, immutable once
-                                 trained on (court-gt, reid, rich28 family)
-  weights/<model>/<run>/         TRAINED MODELS — single home
+                                 trained on. NEVER holds sealed-eval data.
+  models/<model>/<run>/          TRAINED MODELS — single home (see weights note)
   experiments/<project>/         WORKSPACES (offroad-seg pile)
-  eval/<task>/<run>/             RUN OUTPUT — deletable once conclusions recorded
+  eval/<task>/<run>/             MIXED — see eval retention classes below
   demos/                         rendered deliverables
-  files-exchange/                scratch / human handoff — deletable anytime
+  files-exchange/                scratch/handoff — purge-eligible wholesale
+                                 (ipbl agent confirms nothing load-bearing)
   bucket-manifest.json           zone declaration, discoverable by any agent
 ```
 
 Rule of thumb: **`datasets/` is contract, everything else is convention.**
-A label that isn't under `datasets/<d>/labels*|verified*` does not exist as
-far as retrieval is concerned — that's the discipline that makes the goal hold.
 
-## Retrieval story (what "easy to retrieve" concretely means)
+### eval/ retention classes (Correction 2 — NOT uniformly deletable)
 
-- **Join rule (exists today):** frame `frames/<g>/<stem>.jpg` ↔ label
-  `<set>/<g>/<stem>.json`. Same stem = same data point in every set.
-- **Manifest v2 (to build):** per-dataset `manifest.json` gains per-set
-  entries for ALL sets incl. named ones: `{set, group, count, categories,
-  detections, masked%, has_text, has_keypoints, note}` — the `note` field
-  moves meaning ("THE training set", "deletable leftovers") out of CLAUDE.md
-  prose into the index.
-- **`labeling-t datasets` (to build):** bucket-level listing of every dataset
-  + its manifest summary. One command answers "what's labelled on this bucket".
-- **`labeling-t locate --dataset <d> --stem <s>` (to build, small):** list
-  every set containing a label for that stem, with per-set summary (boxes n,
-  mask y/n, text y/n, keypoints y/n). This is the literal "give me everything
-  we know about this frame" query.
-- Cross-dataset identity (1k vs seg share physical frames) — see open
-  questions; not solved by this plan, only made visible by it.
+- **KEEP FOREVER — sealed-run evidence**: `newdata_run`, `sealed3_run`,
+  `sealed4_run` (+ future sealed runs). The quarantine log's rule: re-evaluation
+  reads these artifacts, not the videos. They are the evidence behind one-shot
+  numbers. Treat as immutable.
+- **KEEP — frozen baselines**: `pro_run` (July baseline record),
+  `2026-07-20-baseline`.
+- **REZONE — human labels misfiled here**: `scored-missed*/miss_labeling.csv`,
+  `error_corpus/`, `vision_label_new/` → these are labels and belong under
+  `datasets/<d>/labels-*` by this plan's own contract. Move them INTO the
+  labeling zone; do not let any cleanup rule eat them.
+- **Deletable once conclusions recorded**: everything else (ordinary run
+  outputs).
 
-## Migration steps (cheapest → heaviest; NONE executed yet)
+### Sealed data & quarantine (Correction 1)
 
-Every step: grep this repo AND the ipbl training repo(s) for the old prefix
-before moving; `aws s3 mv --recursive` after sign-off; update manifest after.
+`test_rich28` (crops of sealed 1079351/355/362) and `sealed3_rich28` (sealed3
+grading archives) are **sealed-eval evidence, not training data** — they do
+NOT go under `training/`. They move under `eval/ipbl-rim-crops/` (keep-forever
+class). Additionally:
 
-1. **weights split-brain**: `models/<m>/` → `weights/<m>/` (6 dirs:
-   court-heatmap, player-pose, reid, rim-crop, scoreboard-ocr, shot-vision).
-2. **rename-only conformance** (framework gains addressing, zero semantic change):
-   - `datasets/ipbl-court-pose/images/` → `frames/`
-   - `datasets/ipbl-rim-crops/label-v1/` → `labels-v1/`, `label-v2/` → `labels-v2/`
-   - `datasets/ipbl-player-pose/pseudo-v1/` → `labels-pseudo-v1/`,
-     `verify-v1/` → `verified-v1/`
-3. **rezone training-shaped data**:
-   - `datasets/ipbl-court-gt/` → `training/ipbl-court-gt/`
-   - `datasets/ipbl-reid/` → `training/ipbl-reid/`
-   - `datasets/ipbl-rim-crops/{rich28,sealed3_rich28,test_rich28,newdata_rich28,pretrain_frames}/`
-     → `training/ipbl-rim-crops/…` (the labels-* sets STAY in datasets/)
-   - `datasets/ipbl-court-pose/{dataset.yaml,seed-arc-v1,vlad-far-bench}` →
-     decide: training/ or eval/ (ask ipbl agent)
-4. **rezone workspace**: top-level `offroad-seg/` → `experiments/offroad-seg/`.
-5. **index work (code, this repo)**: manifest v2 → `labeling-t datasets` →
-   `locate` → write `bucket-manifest.json`. Then trim CLAUDE.md's Cloud-state
-   prose to decisions/history only.
+- **Manifest v2 gains a mandatory `tier` field** per set:
+  `train | validation | sealed | donor`, sourced from the ipbl repo's
+  `docs/EVAL_QUARANTINE.md`.
+- The ipbl repo's `reject_sealed` guard reads the manifest as a **second
+  source of truth**, so quarantine is enforced by addressing, not vigilance.
 
-## Open questions for the ipbl agent
+## Retrieval story
 
-1. Which prefixes under `ipbl-court-gt`, `ipbl-reid`, `ipbl-rim-crops`,
-   `ipbl-court-pose` are referenced by live training configs/scripts, and
-   are the proposed names acceptable?
-2. Is anything in `files-exchange/` or `eval/` still load-bearing, or is it
-   all reproducible/concluded?
-3. `datasets/ipbl-court-pose/labels/` — neutral-schema JSON or YOLO txt? If
-   YOLO, it belongs in training/, not datasets/.
-4. Cross-dataset frame identity: do we want a canonical frame ID
-   (`<match>_<segment>_<frame>`?) so labels for the same physical frame in
-   ipbl-basketball-1k and ipbl-basketball-seg can be joined? (Out of scope
-   here, but the `locate` command would surface the duplication.)
+- **Join rule (exists):** `frames/<g>/<stem>.jpg` ↔ `<set>/<g>/<stem>.json`.
+- **Stem convention (Q4 — formalize):** `<game>_f<frame>` is already the
+  de-facto stem in court-gt, review clips, and the error corpus. Formalize it
+  with the contract caveat: **frame indices are only meaningful against the
+  canonical whole-game concat** (fetch_streams.sh order, sequential decode);
+  the VFR trap makes any other indexing wrong. Document in layout.py.
+- **Manifest v2 (build):** per-set entries for ALL sets:
+  `{set, group, count, categories, detections, masked%, has_text,
+  has_keypoints, tier, note}` — `note` moves meaning ("THE training set",
+  "deletable leftovers") out of CLAUDE.md prose; `tier` carries quarantine.
+- **`labeling-t datasets` (build):** bucket-level listing, one command answers
+  "what's labelled on this bucket".
+- **`labeling-t locate --dataset <d> --stem <s>` (build):** every set holding
+  a label for that stem, with per-set summary (boxes n, mask y/n, text y/n,
+  keypoints y/n).
+
+## Weights/models consolidation (Correction 3 — direction REVERSED)
+
+Live-reference counts: `models/*` → 9 files (fetch scripts, both agents' push
+paths); `weights/ipbl-basketball-seg` → 2 files. The 07-20 "move to weights/"
+was a side effect of ultralytics run dirs, not a decision. So consolidate the
+cheap way: **`weights/ipbl-basketball-seg/` → `models/ipbl-basketball-seg/`**
+(2-file patch), delete `weights/`, `models/` is the single home.
+(If Andrii prefers the `weights/` name anyway: ipbl agent has offered to patch
+`fetch_ipbl_models.sh`/`fetch_ipbl_assets.sh` in lockstep — but default is
+models/.) Note: `models/` has 7 dirs incl. `ipbl-reid/` (v0_A..E, v1_E,
+v1_E_long) — inventory below.
+
+## Migration map (updated per Q1/Q3 answers)
+
+Reference counts are from the ipbl repo (code only); a committed old→new path
+map accompanies every batch so both repos migrate in lockstep.
+
+| # | move | refs to patch | gate |
+|---|---|---|---|
+| 1 | `weights/ipbl-basketball-seg/` → `models/ipbl-basketball-seg/` | 2 files | anytime |
+| 2a | `datasets/ipbl-court-pose/images/` → `frames/` | part of 8 court-pose refs | anytime |
+| 2b | `datasets/ipbl-rim-crops/label-v1/` → `labels-v1/`, `label-v2/` → `labels-v2/` | 1 file (ff5 --labels-csv default) | anytime |
+| 2c | `datasets/ipbl-player-pose/pseudo-v1/` → `labels-pseudo-v1/`, `verify-v1/` → `verified-v1/` | 4 files | anytime |
+| 3 | top-level `offroad-seg/` → `experiments/offroad-seg/` | 0 refs | anytime |
+| 4 | `datasets/ipbl-court-gt/` → `training/ipbl-court-gt/` | 8 files (court-GT factory + vlad bench) | sprint pause |
+| 5 | `datasets/ipbl-reid/` → `training/ipbl-reid/` | active v2 work | **sprint pause (hot)** |
+| 6 | rim-crops split: `rich28`, `newdata_rich28`, `v7_rich28`, `v7_newdata_rich28`, `pretrain_frames` → `training/ipbl-rim-crops/…`; `test_rich28`, `sealed3_rich28` → `eval/ipbl-rim-crops/…` (sealed evidence); `labels-*`, `ball_sidecars` stay in datasets/ | 8 files (ff5/6/7 trainers, slide/ablate) | **sprint pause (ff7 writes daily)** |
+| 7 | court-pose 3-way split: YOLO export (`dataset.yaml` + yolo dirs) → `training/ipbl-court-pose/`; `seed-arc-v1/` stays (labeling zone, as `labels-seed-arc-v1/`); `vlad-far-bench/` → `eval/court-pose/vlad-far-bench/` (frozen bench) | within the 8 court-pose refs | sprint pause |
+| 8 | rezone misfiled human labels out of eval/ (scored-missed csv, error_corpus, vision_label_new) → `datasets/<d>/labels-*` | check both repos | anytime, carefully |
+| 9 | purge `files-exchange/` (confirmed nothing load-bearing) | 0 | after user nod |
+
+Known dedup decision queued (NOT this plan): `v7_rich28`/`v7_newdata_rich28`
+(~1 GiB) near-duplicate rich28 — revisit post-ff7.
+
+## Sequencing
+
+- **Anytime:** #1–3, #8, index code (manifest v2, `datasets`, `locate`,
+  bucket-manifest.json). Rename batches land same-window with the ipbl agent's
+  1–2-file patches.
+- **Sprint pause only:** #4–7 — anything touching `rich28*`,
+  `models/ipbl-rim-crop` (ff7 writes daily) or `ipbl-reid` (active v2).
+- **Protocol for every move:** copy → verify (count + spot-check bytes) →
+  repoint (both repos, committed path map) → delete old prefix. Never bare mv.
+- **After migration:** rebuild all manifests, write `bucket-manifest.json`,
+  trim CLAUDE.md Cloud-state prose to decisions/history only.
+
+## Resolved review points (log)
+
+- ✅ Zones + contract + index: agreed by ipbl agent.
+- ✅ C1 sealed quarantine: sealed sets → eval/ + mandatory manifest `tier`
+  field + `reject_sealed` reads manifest.
+- ✅ C2 eval retention classes: encoded above.
+- ✅ C3 weights direction: reversed — models/ is home (2-file vs 9-file patch).
+- ✅ Q1 inventory corrections: v7_rich28 + v7_newdata_rich28 exist (active ff7
+  inputs); models/ has 7th dir ipbl-reid. Fresh full listing available from
+  ipbl agent on request.
+- ✅ Q2: files-exchange purge-eligible; eval per retention classes.
+- ✅ Q3: court-pose split 3 ways (training/labeling/eval).
+- ✅ Q4: formalize `<game>_f<frame>` stem + whole-game-concat caveat.
