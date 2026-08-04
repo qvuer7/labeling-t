@@ -96,7 +96,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>ReID strip lab
   button { font: 14px system-ui; padding: 8px 14px; border-radius: 6px; border: 1px solid #444;
            background: #2a2a36; color: #ddd; cursor: pointer; }
   button:hover { background: #3a3a4a; }
-  #mixed { border-color: #a44; color: #f88; }
+  .big { font-size: 16px; padding: 10px 18px; }
+  .big u { color: #789; text-decoration: none; margin-right: 4px; }
+  .clean { border-color: #4a4; color: #8e8; }
+  .mixedb { border-color: #a44; color: #f88; }
+  .blankb { border-color: #777; color: #bbb; }
   #hint { color: #666; font-size: 12px; margin-top: 10px; }
   #roster { width: 260px; border-left: 1px solid #2a2a36; padding: 14px; overflow-y: auto; }
   #roster h3 { margin: 4px 0 10px; font-size: 14px; color: #aaa; }
@@ -114,15 +118,17 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>ReID strip lab
   <div id="next" class="strip ctx"></div>
   <div id="controls">
     <button onclick="nav(-1)">&#8593; prev</button>
+    <button class="big clean" onclick="save('clean')"><u>1</u> clean</button>
+    <button class="big mixedb" onclick="save('MIXED')"><u>2</u> MIXED</button>
+    <button class="big blankb" onclick="save('')"><u>3</u> blank</button>
     <input id="person" autocomplete="off" spellcheck="false"
-           placeholder="y23 / p7 / ref1 ...">
+           placeholder="or type: y23 / p7 ...">
     <button onclick="save(document.getElementById('person').value)">save &#8594;</button>
-    <button id="mixed" onclick="save('MIXED')">MIXED</button>
-    <button onclick="save('')">blank &#8594;</button>
     <button onclick="nav(1)">skip &#8595;</button>
   </div>
-  <div id="hint">Enter = save+next &nbsp;&middot;&nbsp; &#8595;/&#8593; = move (no save)
-    &nbsp;&middot;&nbsp; green border = known name, orange = NEW name (check for typos)
+  <div id="hint">hotkeys: <b>1</b> clean &middot; <b>2</b> MIXED &middot; <b>3</b> blank
+    (digits act as hotkeys while the input is empty) &nbsp;&middot;&nbsp;
+    Enter = save typed name &nbsp;&middot;&nbsp; &#8595;/&#8593; = move (no save)
     &nbsp;&middot;&nbsp; click roster to apply</div>
 </div>
 <div id="roster"><h3>identities</h3><div id="chips"></div></div>
@@ -183,10 +189,14 @@ async function save(v) {
   render();
 }
 document.addEventListener('keydown', e => {
+  const empty = !$('person').value.trim();
   if (e.key === 'Enter') { save($('person').value); e.preventDefault(); }
   else if (e.key === 'ArrowDown') { nav(1); e.preventDefault(); }
   else if (e.key === 'ArrowUp') { nav(-1); e.preventDefault(); }
   else if (e.key === 'Escape') { $('person').value = ''; markInput(); }
+  else if (empty && e.key === '1') { save('clean'); e.preventDefault(); }
+  else if (empty && e.key === '2') { save('MIXED'); e.preventDefault(); }
+  else if (empty && e.key === '3') { save(''); e.preventDefault(); }
 });
 document.addEventListener('input', markInput);
 fetch('/state').then(r => r.json()).then(s => {
