@@ -107,6 +107,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>ReID strip lab
   .chip { display: flex; justify-content: space-between; padding: 6px 10px; margin: 4px 0;
           background: #22222e; border-radius: 6px; cursor: pointer; font: 14px monospace; }
   .chip:hover { background: #33334a; }
+  .chip.stat { cursor: default; }
+  .chip.stat:hover { background: #22222e; }
   .chip .n { color: #789; }
   .chip.special { color: #f88; }
 </style></head><body>
@@ -127,19 +129,18 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>ReID strip lab
     <button onclick="nav(1)">skip &#8595;</button>
   </div>
   <div id="hint">hotkeys: <b>1</b> clean &middot; <b>2</b> MIXED &middot; <b>3</b> blank
-    (digits act as hotkeys while the input is empty) &nbsp;&middot;&nbsp;
-    Enter = save typed name &nbsp;&middot;&nbsp; &#8595;/&#8593; = move (no save)
-    &nbsp;&middot;&nbsp; click roster to apply</div>
+    &middot; &#8595;/&#8593; move (no save) &nbsp;&middot;&nbsp;
+    click the text box only to type a name (Enter saves, Esc leaves)</div>
 </div>
-<div id="roster"><h3>identities</h3><div id="chips"></div></div>
+<div id="roster"><h3>counts</h3><div id="chips"></div></div>
 <script>
 let rows = [], cur = 0;
 const STRIP_H = 198;
 const $ = id => document.getElementById(id);
 
-function counts() {
+function counts() {  // real person names only (not the triage labels)
   const c = {};
-  for (const r of rows) if (r.person && r.person !== 'MIXED')
+  for (const r of rows) if (r.person && r.person !== 'MIXED' && r.person !== 'clean')
     c[r.person] = (c[r.person] || 0) + 1;
   return c;
 }
@@ -161,15 +162,21 @@ function render() {
   $('progress').textContent = `${done}/${rows.length} labeled`;
   const inp = $('person');
   inp.value = r.person || '';
-  inp.focus(); inp.select();
   markInput();
+  const nClean = rows.filter(x => x.person === 'clean').length;
+  const nMixed = rows.filter(x => x.person === 'MIXED').length;
+  const nEmpty = rows.filter(x => !x.person).length;
   const c = counts();
   const names = Object.keys(c).sort();
   $('chips').innerHTML =
-    names.map(n => `<div class="chip" onclick="save('${n}')"><span>${n}</span>` +
-                   `<span class="n">${c[n]}</span></div>`).join('') +
-    `<div class="chip special" onclick="save('MIXED')"><span>MIXED</span>` +
-    `<span class="n">${rows.filter(x => x.person === 'MIXED').length}</span></div>`;
+    `<div class="chip stat"><span>clean</span><span class="n">${nClean}</span></div>` +
+    `<div class="chip stat special"><span>MIXED</span><span class="n">${nMixed}</span></div>` +
+    `<div class="chip stat"><span>empty (blank/unseen)</span><span class="n">${nEmpty}</span></div>` +
+    (names.length
+      ? '<h3>identities</h3>' +
+        names.map(n => `<div class="chip" onclick="save('${n}')"><span>${n}</span>` +
+                       `<span class="n">${c[n]}</span></div>`).join('')
+      : '');
 }
 function markInput() {
   const v = $('person').value.trim();
@@ -189,14 +196,17 @@ async function save(v) {
   render();
 }
 document.addEventListener('keydown', e => {
-  const empty = !$('person').value.trim();
-  if (e.key === 'Enter') { save($('person').value); e.preventDefault(); }
+  const typing = document.activeElement === $('person');
+  if (typing) {  // text box captures keys only while deliberately focused
+    if (e.key === 'Enter') { save($('person').value); $('person').blur(); e.preventDefault(); }
+    else if (e.key === 'Escape') { $('person').value = ''; markInput(); $('person').blur(); }
+    return;
+  }
+  if (e.key === '1') { save('clean'); e.preventDefault(); }
+  else if (e.key === '2') { save('MIXED'); e.preventDefault(); }
+  else if (e.key === '3') { save(''); e.preventDefault(); }
   else if (e.key === 'ArrowDown') { nav(1); e.preventDefault(); }
   else if (e.key === 'ArrowUp') { nav(-1); e.preventDefault(); }
-  else if (e.key === 'Escape') { $('person').value = ''; markInput(); }
-  else if (empty && e.key === '1') { save('clean'); e.preventDefault(); }
-  else if (empty && e.key === '2') { save('MIXED'); e.preventDefault(); }
-  else if (empty && e.key === '3') { save(''); e.preventDefault(); }
 });
 document.addEventListener('input', markInput);
 fetch('/state').then(r => r.json()).then(s => {
