@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rentahuman": {
+      "command": "npx",
+      "args": ["-y", "rentahuman-mcp"],
+      "env": {
+        "RENTAHUMAN_API_KEY": "${RENTAHUMAN_API_KEY}"
+      }
+    }
+  }
+}

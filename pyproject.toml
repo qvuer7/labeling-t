@@ -42,6 +42,8 @@ models = [
     # 4.57's config + attn internals — transformers 5.x drift (rope_theta moved to
     # rope_parameters, the allow_all_kernels attn kwarg, ...) breaks its remote code.
     # OWLv2's adapter already carries a 4.x post-process fallback, so it's fine here.
+    # (sam3 needs transformers>=5 — NOT added here; it serves from the :sam3
+    # image variant built with the Dockerfile's TRANSFORMERS_VERSION build-arg.)
     "transformers==4.57.1",   # OWLv2 / GroundingDINO / LocateAnything-3B
     "scipy>=1.10",            # OWLv2's Owlv2ImageProcessorPil needs it for resize (else /infer 500s)
     "pillow>=10.0",
@@ -67,6 +69,7 @@ labeling-t = "labeling_t.cli:main"
 labeling-t-runpod = "labeling_t.runpod:main"
 labeling-t-web = "labeling_t.web.app:main"
 labeling-t-models = "labeling_t.server.app:main"
+labeling-t-workforce = "labeling_t.workforce:main"
 
 [build-system]
 requires = ["hatchling"]
