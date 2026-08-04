@@ -254,10 +254,18 @@ class TransformersClient:
         raise last_exc
 
     def infer_raw(self, image_path: str | Path) -> RawInference:
-        """Structured detections for one image (detector backends)."""
+        """Structured detections for one image (detector backends). Masks ride
+        along when the model emits them with its boxes (SAM3 detects AND
+        segments in one pass); box-only detectors leave them None and nothing
+        downstream changes."""
         data = self._post_infer(self.build_payload(image_path))
-        boxes = [(d["bbox"], d["label"], d.get("score")) for d in data.get("detections", [])]
-        return RawInference(boxes=boxes, width=data.get("width"), height=data.get("height"))
+        dets = data.get("detections", [])
+        boxes = [(d["bbox"], d["label"], d.get("score")) for d in dets]
+        masks = [d.get("mask") for d in dets]
+        return RawInference(
+            boxes=boxes, width=data.get("width"), height=data.get("height"),
+            masks=masks if any(m is not None for m in masks) else None,
+        )
 
     def _prompt_boxes(
         self,

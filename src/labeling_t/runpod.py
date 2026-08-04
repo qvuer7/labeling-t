@@ -126,9 +126,12 @@ def _serving(spec: ModelSpec) -> dict:
         if spec.hf_model:
             env["HF_MODEL"] = spec.hf_model
         token = os.environ.get("HF_TOKEN", "").strip()
-        if token:  # gated weights (e.g. LocateAnything-3B) need an HF token in the pod
+        if token:  # gated weights (e.g. LocateAnything-3B, SAM3) need an HF token in the pod
             env["HF_TOKEN"] = token
-        return {"image": MODELS_IMAGE, "docker_args": "", "env": env, "health": "/health"}
+        image = MODELS_IMAGE
+        if spec.image_tag:  # dep-variant image (e.g. sam3 -> transformers>=5 build)
+            image = f"{MODELS_IMAGE.rsplit(':', 1)[0]}:{spec.image_tag}"
+        return {"image": image, "docker_args": "", "env": env, "health": "/health"}
     return {"image": IMAGE, "docker_args": _docker_args(spec), "env": {}, "health": "/v1/models"}
 
 

@@ -79,6 +79,7 @@ two transport clients:**
 | `owlv2` | open-vocab detector | `transformers` | our model-server (GPU pod) |
 | `locate_anything` | grounding VLM detector | `transformers` | our model-server (GPU pod) |
 | `sam2` | **segmenter** (box→mask) | `transformers` | our model-server (GPU pod) |
+| `sam3` | **text→masks+boxes+scores** (one-pass concept segmentation) | `transformers` | our model-server, `:sam3` image variant |
 | `qwen3_vl` | grounding VLM detector | `vllm` | stock `vllm/vllm-openai` (GPU pod) |
 | `openai_vl` | general VLM (GPT-4o) | `openai` | hosted API (no GPU) |
 | `gemini_vl` | general VLM (Gemini) | `gemini` | hosted API (no GPU) |
@@ -126,6 +127,14 @@ Per-model gotchas worth knowing (documented inline in each adapter):
   run is several `generate()`s per frame → use `--concurrency 1` (see §6).
 - **SAM2** uses transformers' **native** `Sam2Model` — plain torch, **no custom
   CUDA `_C` extension** — so it shares the slim image (not `facebookresearch/sam2`).
+- **SAM3** is detector *and* segmenter in one: short noun-phrase queries in,
+  instance masks + boxes + scores out (masks ride back on the detections, so no
+  SAM2 stage behind it). Native `Sam3Model`, but it needs **transformers>=5**,
+  which the default image's 4.57.1 pin (LocateAnything) can't satisfy — so its
+  spec sets `image_tag="sam3"` and it serves from a **separate image variant**
+  built with the Dockerfile's `TRANSFORMERS_VERSION` build-arg. Weights are
+  gated on HF (`HF_TOKEN`). Vision embeddings are computed once per frame and
+  reused across queries.
 
 ---
 

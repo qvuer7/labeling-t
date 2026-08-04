@@ -40,6 +40,20 @@ COPY README.md ./
 COPY src/ ./src/
 RUN uv sync --extra models --no-dev
 
+# --- dependency VARIANT (optional) ---
+# Some models need deps the default pins can't satisfy: sam3's Sam3Model needs
+# transformers>=5, while the default pins ==4.57.1 for LocateAnything's vendored
+# remote code. Those serve from their own image TAG (ModelSpec.image_tag), built
+# by overriding transformers AFTER the sync so the cached deps layer is reused:
+#   docker build --build-arg TRANSFORMERS_VERSION=5.14.0 \
+#       -t ghcr.io/qvuer7/labeling-t-models:sam3 .
+#   docker push ghcr.io/qvuer7/labeling-t-models:sam3
+ARG TRANSFORMERS_VERSION=
+RUN if [ -n "$TRANSFORMERS_VERSION" ]; then \
+        uv pip install --python /app/.venv/bin/python --no-cache-dir \
+            "transformers==${TRANSFORMERS_VERSION}"; \
+    fi
+
 ENV MODEL=owlv2 \
     PORT=8000
 EXPOSE 8000

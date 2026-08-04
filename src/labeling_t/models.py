@@ -65,6 +65,13 @@ class ModelSpec:
     # Serving recipe (used by runpod.py to stand the model up):
     hf_model: str = ""                    # HF repo to serve, e.g. Qwen/Qwen3-VL-8B-Instruct
     serve_args: str = ""                  # extra vllm args (max-model-len, etc.)
+    # Model-server image VARIANT tag for the transformers backend ("" = the
+    # default image). A model whose deps can't coexist with the default image's
+    # pins names its own tag (e.g. sam3 needs transformers>=5 while the default
+    # pins 4.57.1 for LocateAnything's vendored remote code); runpod.py swaps
+    # the tag into MODELS_IMAGE at provisioning time. Build variants via the
+    # Dockerfile's TRANSFORMERS_VERSION build-arg.
+    image_tag: str = ""
 
     def endpoint_from_env(self) -> str:
         # env override wins; else the spec's baked-in default (SaaS provider URL).
@@ -256,6 +263,28 @@ VITPOSE = ModelSpec(
     hf_model="usyd-community/vitpose-base-simple",
 )
 
+# SAM3 (Segment Anything 3, Meta) — text-prompted CONCEPT segmentation: a short
+# noun phrase in ("player", "teal court surface", ...), instance masks + boxes +
+# CONFIDENCE SCORES for every match out. Detector AND segmenter in ONE pass — no
+# SAM2 stage needed behind it (masks ride back on the same detections). Served by
+# OUR transformers model-server, BUT Sam3Model needs transformers>=5 while the
+# default image pins 4.57.1 (LocateAnything's vendored remote code) — so it rides
+# its own image variant (image_tag="sam3"; see the Dockerfile's
+# TRANSFORMERS_VERSION build-arg). Weights are GATED on HF: export HF_TOKEN
+# before `labeling-t-runpod up --model sam3`. Prompts work best as short noun
+# phrases (PCS's design); long referring expressions degrade.
+SAM3 = ModelSpec(
+    key="sam3",
+    name="sam3",
+    env_prefix="SAM3",
+    prompt="",                            # concept queries are sent structured, not as a prompt
+    coord_space="abs",                    # post-processed boxes are abs-px xyxy
+    categories=("player", "ball", "referee"),
+    backend="transformers",
+    hf_model="facebook/sam3",
+    image_tag="sam3",
+)
+
 REGISTRY: dict[str, ModelSpec] = {
     LOCATE_ANYTHING.key: LOCATE_ANYTHING,
     QWEN3_VL.key: QWEN3_VL,
@@ -265,6 +294,7 @@ REGISTRY: dict[str, ModelSpec] = {
     OPENAI_OCR.key: OPENAI_OCR,
     GEMINI_OCR.key: GEMINI_OCR,
     SAM2.key: SAM2,
+    SAM3.key: SAM3,
     VITPOSE.key: VITPOSE,
 }
 

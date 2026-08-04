@@ -73,6 +73,11 @@ class RawInference:
     boxes: list[tuple[list[float], str, float | None]]
     width: int | None = None
     height: int | None = None
+    # Optional per-box COCO-RLE masks, aligned with `boxes` by index. Filled only
+    # when the backend emits masks WITH its detections (SAM3's one-pass concept
+    # segmentation); box-only backends leave it None. Rides beside `boxes` rather
+    # than inside the tuples so spec.parse (text backends) keeps its 3-tuple shape.
+    masks: list[dict | None] | None = None
 
 
 class SupportsInfer(Protocol):
@@ -178,12 +183,15 @@ def _box_to_bbox(raw: list[float], w: int, h: int, coord_space: CoordSpace) -> B
 def _detections(
     boxes: list[tuple[list[float], str, float | None]], w: int, h: int, spec,
     *, category_map: dict[str, str] | None, min_score: float, strict_categories: bool,
+    masks: list[dict | None] | None = None,
 ) -> list[Detection]:
     """Parsed boxes + image dims -> Detections. Shared by the local and cloud
     paths and by both backend kinds; only how `boxes`/`w`/`h` are obtained
-    differs (text-backend: spec.parse; structured-backend: server JSON)."""
+    differs (text-backend: spec.parse; structured-backend: server JSON).
+    `masks` (index-aligned with `boxes`) attaches a ride-along mask when a
+    one-pass model (SAM3) emitted one with the box."""
     out: list[Detection] = []
-    for box, label, score in boxes:
+    for i, (box, label, score) in enumerate(boxes):
         category = label if category_map is None else category_map.get(label)
         if category is None:
             if strict_categories:
@@ -197,6 +205,7 @@ def _detections(
                 category=category,
                 score=score,
                 source=spec.name,
+                mask=masks[i] if masks else None,
             )
         )
     return out
@@ -218,7 +227,8 @@ def _label_one(
         with Image.open(image_path) as im:    # text backend -> dims from disk
             w, h = im.size
     dets = _detections(raw.boxes, w, h, spec, category_map=category_map,
-                       min_score=min_score, strict_categories=strict_categories)
+                       min_score=min_score, strict_categories=strict_categories,
+                       masks=raw.masks)
     return ImageLabels(image_path=image_path, width=w, height=h, detections=dets)
 
 
@@ -326,7 +336,8 @@ def prelabel_cloud(
             else:
                 w, h = storage.image_size(uri)        # text backend: dims via ranged header read
             dets = _detections(raw.boxes, w, h, spec, category_map=category_map,
-                               min_score=min_score, strict_categories=strict_categories)
+                               min_score=min_score, strict_categories=strict_categories,
+                               masks=raw.masks)
             labels = ImageLabels(image_path=uri, width=w, height=h, detections=dets)
             # the write is inside the resilience boundary: a transient object-store
             # drop must fail this one frame, not crash the whole batch. Retry the

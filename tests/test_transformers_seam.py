@@ -92,6 +92,59 @@ def test_prelabel_cloud_structured_end_to_end():
     assert d.category == "player" and d.source == "owlv2"
 
 
+def test_infer_raw_masks_ride_along_when_present():
+    # SAM3 detects and segments in one pass: masks arrive WITH the boxes and
+    # stay index-aligned; a box-only response leaves raw.masks None entirely.
+    rle = {"size": [100, 200], "counts": "abc"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _infer_response([
+            {"bbox": [1, 2, 3, 4], "label": "player", "score": 0.9, "mask": rle},
+            {"bbox": [5, 6, 7, 8], "label": "ball", "score": 0.8},
+        ])
+
+    client = TransformersClient(
+        "http://srv:8000", SPEC, transport=httpx.MockTransport(handler),
+    )
+    raw = client.infer_raw("https://s/frame.jpg?sig=x")
+    assert raw.masks == [rle, None]
+
+    boxes_only = TransformersClient(
+        "http://srv:8000", SPEC,
+        transport=httpx.MockTransport(lambda r: _infer_response(
+            [{"bbox": [1, 2, 3, 4], "label": "player", "score": 0.9}])),
+    )
+    assert boxes_only.infer_raw("https://s/frame.jpg?sig=x").masks is None
+
+
+def test_prelabel_cloud_one_pass_masks_reach_detection_mask():
+    # end-to-end: a masked detection from the server lands on Detection.mask in
+    # the stored neutral-schema labels (the SAM3 one-pass path).
+    from labeling_t.models import SAM3
+
+    rle = {"size": [100, 200], "counts": "abc"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _infer_response(
+            [{"bbox": [10, 20, 110, 90], "label": "player", "score": 0.8, "mask": rle}],
+            w=200, h=100,
+        )
+
+    client = TransformersClient(
+        "http://s:8000", SAM3, categories=["player"],
+        transport=httpx.MockTransport(handler),
+    )
+    storage = _FakeStorage()
+    n = prelabel_cloud(
+        ["s3://b/d/frames/all/g_000_1.jpg"], client, "s3://b/d/labels/all", storage=storage,
+    )
+    assert n == 1
+    [text] = storage.written.values()
+    labels = ImageLabels.model_validate_json(text)
+    d = labels.detections[0]
+    assert d.mask == rle and d.score == 0.8 and d.source == "sam3"
+
+
 def test_stub_server_contract():
     c = TestClient(create_app())
     health = c.get("/health").json()

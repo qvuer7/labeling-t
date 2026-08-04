@@ -8,12 +8,14 @@ from labeling_t.server.adapters import (
     LocateAnythingAdapter,
     Owlv2Adapter,
     Sam2Adapter,
+    Sam3Adapter,
     StubAdapter,
     get_adapter,
 )
 from labeling_t.server.adapters.locateanything import _parse_boxes, _to_wire
 from labeling_t.server.adapters.owlv2 import _finalize
 from labeling_t.server.adapters.sam2 import _input_boxes
+from labeling_t.server.adapters.sam3 import _to_wire as _sam3_to_wire
 
 
 def test_finalize_unpads_padding_region_and_clamps():
@@ -94,6 +96,47 @@ def test_sam2_input_boxes_wraps_to_nested_prompt_shape():
     out = _input_boxes([[10, 20, 30, 40], [1, 2, 3, 4]])
     assert out == [[[10.0, 20.0, 30.0, 40.0], [1.0, 2.0, 3.0, 4.0]]]
     assert _input_boxes([]) == [[]]
+
+
+def test_registry_returns_sam3_unloaded():
+    a = get_adapter("sam3")
+    assert isinstance(a, Sam3Adapter)
+    assert a.ready is False  # constructed, not loaded -> no torch imported
+    assert a.hf_model == "facebook/sam3"
+
+
+def test_sam3_to_wire_pairs_box_score_mask_and_clamps():
+    # SAM3 emits abs-px boxes WITH scores and masks; each triple stays paired.
+    rle = {"size": [100, 200], "counts": "abc"}
+    dets = _sam3_to_wire(
+        [[10, 20, 110, 90], [180, 10, 260, 80]],   # 2nd x2=260 > 200 -> clamp
+        [0.9, 0.8], [rle, None], "player", w=200, h=100,
+    )
+    assert [d.label for d in dets] == ["player", "player"]
+    assert dets[0].bbox == [10.0, 20.0, 110.0, 90.0]
+    assert dets[0].score == 0.9 and dets[0].mask == rle
+    assert dets[1].bbox == [180.0, 10.0, 200.0, 80.0]  # clamped x2
+    assert dets[1].mask is None
+
+
+def test_sam3_to_wire_drops_degenerate_with_its_mask():
+    # zero-width box dropped; its mask must not shift onto the surviving box
+    dets = _sam3_to_wire(
+        [[150, 50, 150, 90], [0, 0, 10, 10]], [0.9, 0.7],
+        [{"size": [1, 1], "counts": "x"}, None], "ball", 200, 100,
+    )
+    assert len(dets) == 1
+    assert dets[0].bbox == [0.0, 0.0, 10.0, 10.0] and dets[0].mask is None
+
+
+def test_serving_recipe_sam3_uses_variant_image_tag():
+    # sam3's deps (transformers>=5) can't live in the default image -> its spec
+    # names an image_tag and _serving swaps it into MODELS_IMAGE.
+    s = _serving(get_spec("sam3"))
+    assert s["image"] == MODELS_IMAGE.rsplit(":", 1)[0] + ":sam3"
+    assert s["health"] == "/health" and s["docker_args"] == ""
+    assert s["env"]["MODEL"] == "sam3"
+    assert s["env"]["HF_MODEL"] == "facebook/sam3"
 
 
 def test_stub_adapter_detect_shape():
