@@ -11,11 +11,22 @@ models / LS / COCO are swappable adapters. Branch: **`transformers-model-server`
 ## Models & serving (in code, `models.py` registry)
 Three backends behind one neutral schema:
 - **transformers** (our FastAPI model-server, one GHCR image `ghcr.io/qvuer7/labeling-t-models`,
-  `MODEL` env selects adapter): `owlv2`, `locate_anything`, `sam2`, `vitpose` (keypoints).
+  `MODEL` env selects adapter): `owlv2`, `locate_anything`, `sam2`, `vitpose` (keypoints),
+  `sam3` (text→masks+boxes+scores in one pass; `:sam3` image variant — transformers 5.14.1,
+  built+pushed, GPU-TESTED on 5090 2026-07-20: 1488 frames @ ~0.5s/frame. Gated weights →
+  HF_TOKEN in .env (access granted to az1029; gate is MANUAL Meta approval). Prompt lesson:
+  direct concept names beat descriptions ("center circle of the basketball court" + --min-score
+  0.8 clean vs arcs; "red rectangle painted on the basketball court floor" → paint 0.96+).
+  Gotcha: `datacenters` cmd (runpodctl data) falsely reported 5090 out of stock — RunPod
+  GraphQL gpuTypes said stock=High; trust GraphQL, fix datacenters someday.
 - **vllm** (stock image): `qwen3_vl`.
 - **hosted chat** (`ChatClient`, no GPU): `openai_vl`, `gemini_vl`.
 Provision GPUs: `labeling-t-runpod up --model <k> --gpu <preset> --hours H --budget $`
 (auto-retries datacenters with stock; refuses duplicates — `--force` overrides).
+Provision HUMANS: `labeling-t-workforce` (workforce.py, RentAHuman backend, added 2026-07-20) —
+search/post-bounty/status/applications/message; RENTAHUMAN_API_KEY in .env; money actions
+(escrow/accept/release) deliberately NOT wrapped — web UI or `rentahuman` MCP (.mcp.json) only.
+Live bounty: QC9eap1xrZJwUkVo8PkF ($25, 100-frame keypoint trial for LS project 20, funded+open).
 Endpoint state lives in `.labeling-t/pods.json` (podstate.py), NOT `.env` (secrets only);
 inference commands auto-resolve it (`--endpoint` overrides); `status --json` reconciles.
 
@@ -44,30 +55,61 @@ Dataset **`datasets/ipbl-basketball-1k/`** (2000 frames, 28 matches). CLEANED 20
 - `labels-combined/all/` — **1532 mask labels = THE training set** = old verified-reviewed-clean
   (946 human) ∪ labels-filtered (586 = LS-project-11 verified 600 minus 14 user-dropped).
   13,006 detections, 100% masked; provenance on `source`: 10,011 human / 2,995 best.pt+sam2.
-- `labels-ocr/all/` — **2000 files with scoreboard OCR** on `Detection.text` as JSON
-  `{"home","away","timer"}` (1987 parsed clean; ~22 score-decrease anomalies worth human eyes).
+- `labels-ocr-clean/all/` — **2000 files with scoreboard OCR** on `Detection.text` as JSON
+  `{"home","away","timer"}` + `corrections.json` (human-verified fixes 2026-07-08). The raw
+  `labels-ocr` set was deleted 2026-07-20 (superseded by this corrected version).
+- `labels-hoop/all/` — 1159 hoop labels (LS project 13 source).
 - `labels-yolo-sam2/all/` — 1054 model masks; source of LS project 11 predictions. KEEP until
   project 11 verification finishes (accepted-as-is exports copy from here), then delete.
 - `verified/all/` — 457 old human BOXES (pre-mask era). Kept pending user decision — human work,
   not derivable; delete when confirmed obsolete.
-- `models/ipbl-basketball-seg/primary/` — trained seg model `best.pt` (63 MB).
 - `manifest.json` rebuilt 2026-07-06 (5 categories; counts only standard prefixes, so named
   label sets don't appear in its totals).
 Deleted 2026-07-06 (all verified byte-identical-in-combined or superseded): `verified-reviewed-clean`,
-`labels-filtered`, `pre-filtered-verified`, `labels-yolo-seg` — don't look for them.
+`labels-filtered`, `pre-filtered-verified`, `labels-yolo-seg`. Deleted 2026-07-20: `labels-rim`,
+`labels-rim-verified`, `verified-rim` (rim masks verified merged into `ipbl-basketball-seg/yolo`,
+class 1; the 10 non-merged rim frames are all in its `dropped.txt`) + `labels-ocr` — don't look for them.
+
+**`weights/`** (top-level, moved from `models/` 2026-07-20): `weights/ipbl-basketball-seg/` = two seg
+runs `ipbl_seg_yolo26l_1280/` + `ipbl_seg_yolo26x_1280/` (best.pt 63/142 MB + training artifacts).
+Still under `models/`: `ipbl-scoreboard-ocr/` (89 MB), `ipbl-shot-vision/` — not yet moved.
+
+**`datasets/ipbl-basketball-seg/`** — `labels/` (1488 flat, group "" — combined minus 43 dropped,
+LS project 16 source) + `frames/all/` (1488, copied from yolo/images 2026-07-20 for framework
+addressing) + `labels-v2/all/` (1488 = labels ∪ sam3 court zones; LS project 19 source) +
+`labels-sam3-court-final/all/` (1488, zones only: paint 481 + center_circle 1158; sample sets
+`labels-sam3-court{,2,3}`/`labels-sam3-ccab` = prompt-iteration leftovers, deletable) + `yolo/`
+(253 MB Ultralytics export, classes ball/rim/player/referee/scoreboard) + `dropped.txt` (43).
 
 Also `datasets/ipbl-scoreboard-kp/` (200 frames + seeded keypoint labels, 5 games, for
-LS project 17), `datasets/ipbl-court-kp/` (same frames, empty court labels, LS project 18) and `datasets/ipbl-basketball/` = raw parent pool (13,265 frames, 28 groups, no labels) and
-`streams/` = 147 raw videos (12.9 GB).
+LS project 17), `datasets/ipbl-court-kp/` (same frames, empty court labels, LS project 18),
+`datasets/ipbl-scoreboard-ocr/` (47 MB, type1-3 crop archives), `datasets/ipbl-shot-vision/`
+(248 MB — traces/ + npz/csv labels) and `streams/` = 30 matches, ~15 GB (KEEP — source of truth).
+`datasets/ipbl-basketball/` parent-pool frames DELETED 2026-07-08 (re-derivable from streams;
+manifest.json kept). `eval/`: `scored-missed*.csv` (shot-clip labels; the 201 clips themselves
+deleted — 689 clips labeled locally 2026-07-14 across 6 batches: 386 make / 268 miss / 30 unclear
+/ 5 not_a_shot), `traces/` (134 MB, scored-missed eval), `possession/`, `vision_label_new/`.
+`demos/possession/` (218 MB) kept for now. Bucket total after 2026-07-20 cleanup: ~19 GB.
 
 ## Label Studio
 Hosted at `LS_URL` (`.env`), token `LS_API_KEY`. Login `admin@labeling-t.local` / droplet password.
-Relevant projects: **18 = "ipbl court keypoints (29pt)"** (same 200 frames as 17, dataset
+Relevant projects: **20 = "IPBL court keypoints — anchors v2"** (706 PRO-league court-visible
+frames per `ipbl-basketball-seg/venue_types.csv`; 18 clicked anchors + 2 arc-sample labels,
+exact config/instructions from vsoccer `court_reg_refs/labelstudio_project_instructions.md`;
+empty set `labels-pro-court-anchors/all`; export = JSON-MIN, coords in PERCENT; created
+2026-07-20. NOTE: venue_types.csv also maps 10 venues/3 leagues per frame — sam3 paint prompt
+works ONLY on PRIME venues, all 7 PRO venues got 0 paint) ·
+**19 = "ipbl-seg v2 + court zones (brush)"** (1488 tasks from
+`ipbl-basketball-seg/labels-v2/all` = labels ∪ sam3 court zones [paint 481 / center_circle
+1158, source="sam3", min-score 0.8]; created 2026-07-20 for zone verification; merge via
+`scripts/merge_label_sets.py` THROWAWAY) · **18 = "ipbl court keypoints (29pt)"** (same 200 frames as 17, dataset
 `ipbl-court-kp`; 29 index-prefixed court points, 0-4 mid / 5-16 near end / 17-28 far end
 "_far"; 15/27+16/28 names INFERRED — arc_junction_right/arc_top; label only visible points) ·
 **17 = "ipbl scoreboard keypoints (type2 mix)"** (200 frames from 5
 games, seeded home/away/timer points at type-2 centers — drag to correct; dataset
-`ipbl-scoreboard-kp`, created 2026-07-07; pull-back needs K5's from-ls keypoint parsing) ·
+`ipbl-scoreboard-kp`, created 2026-07-07; keypoint pull-back WORKS since 2026-07-28 —
+`from-ls[-cloud] --keypoint-category <cat>` collapses a task's flat LS point regions into one
+Detection with `keypoints` + enclosing bbox; empty-result annotations are skipped, no dims) ·
 **16 = "ipbl-seg latest labels (brush)"** (1488 tasks from
 datasets/ipbl-basketball-seg/labels — flat set, `--group ""`; created 2026-07-07) ·
 **15 = "ipbl-1k rim masks (brush)"** (1125 SAM2 masks on verified rim boxes,

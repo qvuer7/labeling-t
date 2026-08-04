@@ -61,6 +61,13 @@ Provisioning (`labeling-t-runpod`):
 `gpus` · `datacenters --gpu <k>` (stock check) · `up --model <k> --gpu <k>
 --hours H --budget $ [--force]` · `status` · `down [<pod-id>|--all]`.
 
+Human workforce (`labeling-t-workforce`, RentAHuman backend, RENTAHUMAN_API_KEY in .env):
+`search --skill <s>` · `post --title --price --hours --criteria --description[-file]`
+· `status --bounty <id>` · `applications --bounty <id>` · `message --conversation <id> --text`.
+Money NEVER moves from this CLI — escrow funding / accepting / payment release happen in the
+RentAHuman web UI or via the `rentahuman` MCP (repo `.mcp.json`) with explicit user confirmation.
+Send hires a DEDICATED LS annotator login via platform messaging, never admin creds.
+
 Pipeline (`labeling-t`), in lifecycle order:
 `ingest-images` / `frames` → `prelabel-cloud` → `segment-cloud` (boxes→SAM2
 masks) / `transcribe-cloud` (crops→OCR text) / `keypoints-cloud` (boxes→VitPose
@@ -95,7 +102,9 @@ a bucket listing shows: `labels`, `labels-<name>`, `verified`,
   Over-budget pods self-delete and the error suggests corrected `--hours`.
 - `up` refuses a duplicate pod for the same model — reuse
   `error.existing.endpoint`; only `--force` for a deliberate second instance.
-- transformers backend (owlv2, locate_anything, sam2, vitpose) = **`--concurrency 1`**
+- transformers backend (owlv2, locate_anything, sam2, sam3, vitpose) = **`--concurrency 1`**
+- sam3 = text-prompted one-pass detect+segment (masks+boxes+scores per concept query);
+  serves from the `:sam3` image variant (transformers>=5) and needs `HF_TOKEN` (gated weights)
   (one GPU model, not reentrant). vLLM and hosted APIs fan out fine.
 - Full details + LS/OCR/RunPod gotchas: `references/guardrails.md`.
 
