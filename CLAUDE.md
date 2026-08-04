@@ -6,7 +6,8 @@ This file is the *current state* + operational facts that aren't obvious from th
 ## What this project is (1 line)
 Batch auto-labeling backend: run a vision model over frames → neutral-schema labels →
 verify in Label Studio → export for training. Owned neutral schema is the contract;
-models / LS / COCO are swappable adapters. Branch: **`transformers-model-server`**.
+models / LS / COCO are swappable adapters. Branch: **`main`** (transformers-model-server
+merged 2026-08-04 — sam3, workforce, keypoint pull-back all landed).
 
 ## Models & serving (in code, `models.py` registry)
 Three backends behind one neutral schema:
