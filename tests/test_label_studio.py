@@ -236,3 +236,103 @@ def test_keypoint_tasks_with_no_keypoints_have_empty_predictions():
                       detections=[Detection(bbox=BBox(x1=0, y1=0, x2=10, y2=10), category="c")])
     (task,) = to_label_studio_tasks([img], control="keypoint")
     assert task["predictions"][0]["result"] == []  # label-from-scratch project
+
+
+def test_from_ls_reads_keypoints_into_one_detection():
+    # LS keypoint regions are flat (no grouping id), so all points of an
+    # annotation collapse into ONE Detection: keypoints filled, bbox = the
+    # points' enclosing box, category = keypoint_category.
+    export = [
+        {
+            "data": {"image": "frame.jpg"},
+            "annotations": [
+                {
+                    "result": [
+                        {
+                            "type": "keypointlabels",
+                            "original_width": 1000, "original_height": 500,
+                            "value": {"x": 10.0, "y": 20.0, "width": 0.5,
+                                      "keypointlabels": ["cc_center"]},
+                        },
+                        {
+                            "type": "keypointlabels",
+                            "original_width": 1000, "original_height": 500,
+                            "value": {"x": 50.0, "y": 80.0, "width": 0.5,
+                                      "keypointlabels": ["A_corner_L"]},
+                        },
+                        {  # unlabeled point region -> ignored
+                            "type": "keypointlabels",
+                            "original_width": 1000, "original_height": 500,
+                            "value": {"x": 1.0, "y": 1.0, "width": 0.5,
+                                      "keypointlabels": []},
+                        },
+                    ]
+                }
+            ],
+        }
+    ]
+    out = from_label_studio(export, keypoint_category="court")
+    assert len(out) == 1
+    assert out[0].width == 1000 and out[0].height == 500
+    (d,) = out[0].detections
+    assert d.category == "court"
+    assert d.score is None
+    names = [k.name for k in d.keypoints]
+    assert names == ["cc_center", "A_corner_L"]
+    cc, corner = d.keypoints
+    assert approx(cc.x, 100) and approx(cc.y, 100)       # percent -> pixels
+    assert approx(corner.x, 500) and approx(corner.y, 400)
+    assert cc.visible is True
+    # bbox = enclosing box of the points
+    assert approx(d.bbox.x1, 100) and approx(d.bbox.y1, 100)
+    assert approx(d.bbox.x2, 500) and approx(d.bbox.y2, 400)
+
+
+def test_from_ls_keypoints_alongside_boxes():
+    export = [
+        {
+            "data": {"image": "frame.jpg"},
+            "annotations": [
+                {
+                    "result": [
+                        {
+                            "type": "rectanglelabels",
+                            "original_width": 100, "original_height": 100,
+                            "value": {"x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0,
+                                      "rectanglelabels": ["player"]},
+                        },
+                        {
+                            "type": "keypointlabels",
+                            "original_width": 100, "original_height": 100,
+                            "value": {"x": 50.0, "y": 50.0, "width": 0.5,
+                                      "keypointlabels": ["home"]},
+                        },
+                    ]
+                }
+            ],
+        }
+    ]
+    out = from_label_studio(export)
+    cats = [d.category for d in out[0].detections]
+    assert cats == ["player", "keypoints"]  # default keypoint_category
+
+
+def test_keypoint_roundtrip_schema_to_ls_and_back():
+    from labeling_t.adapters.label_studio import to_label_studio_tasks
+    from labeling_t.schema import Keypoint
+
+    original = ImageLabels(
+        image_path="f1.jpg", width=1280, height=720,
+        detections=[Detection(
+            bbox=BBox(x1=70, y1=570, x2=405, y2=640), category="scoreboard",
+            keypoints=[Keypoint(x=265, y=622.5, name="home"),
+                       Keypoint(x=91.5, y=581.5, name="timer")],
+        )],
+    )
+    tasks = to_label_studio_tasks([original], control="keypoint")
+    back = from_label_studio(tasks, result_source="predictions")
+    (d,) = back[0].detections
+    assert [k.name for k in d.keypoints] == ["home", "timer"]
+    ok, bk = original.detections[0].keypoints, d.keypoints
+    for o, b in zip(ok, bk):
+        assert approx(o.x, b.x) and approx(o.y, b.y)

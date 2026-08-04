@@ -24,8 +24,9 @@ import os
 from typing import Callable
 from xml.sax.saxutils import quoteattr
 
-from ..geometry import abs_to_percent, percent_to_abs, point_abs_to_percent, polygon_to_rle, rle_to_polygon
-from ..schema import BBox, Detection, ImageLabels
+from ..geometry import (abs_to_percent, percent_to_abs, point_abs_to_percent,
+                        point_percent_to_abs, polygon_to_rle, rle_to_polygon)
+from ..schema import BBox, Detection, ImageLabels, Keypoint
 
 # LS control tag per annotation kind; `control` selects which one a project uses.
 _CONTROLS = {"rectangle": "RectangleLabels", "polygon": "PolygonLabels", "brush": "BrushLabels",
@@ -254,11 +255,18 @@ def from_label_studio(
     *,
     image_value: str = "image",
     result_source: str = "annotations",
+    keypoint_category: str = "keypoints",
 ) -> list[ImageLabels]:
     """LS export -> neutral schema. Reads human-verified `annotations` by default
     (pass result_source="predictions" to read model output instead). Handles box,
-    polygon, and brush regions; polygon/brush recover a mask AND a box. Each result
-    carries original_width/height, so dims come straight from the export."""
+    polygon, brush, and keypoint regions; polygon/brush recover a mask AND a box.
+    Each result carries original_width/height, so dims come straight from the export.
+
+    Keypoints: LS point regions are flat — the import side emits one region per
+    point and the parent detection's category/grouping is not representable — so
+    all `keypointlabels` regions of an annotation collapse into ONE Detection
+    (`keypoints` filled, visible=True, bbox = the points' enclosing box,
+    category = `keypoint_category`), appended after the region detections."""
     out: list[ImageLabels] = []
     for task in tasks:
         image_path = task.get("data", {}).get(image_value)
@@ -270,13 +278,28 @@ def from_label_studio(
 
         width = height = None
         detections: list[Detection] = []
+        points: list[Keypoint] = []
         for item in results:
-            if item.get("type") not in ("rectanglelabels", "polygonlabels", "brushlabels"):
+            if item.get("type") not in ("rectanglelabels", "polygonlabels",
+                                        "brushlabels", "keypointlabels"):
                 continue
             width, height = item["original_width"], item["original_height"]
+            if item["type"] == "keypointlabels":
+                labels = item["value"].get("keypointlabels") or []
+                if labels:
+                    x, y = point_percent_to_abs(item["value"]["x"], item["value"]["y"],
+                                                width, height)
+                    points.append(Keypoint(x=x, y=y, name=labels[0], visible=True))
+                continue
             det = _det_from_result(item)
             if det is not None:
                 detections.append(det)
+
+        if points:
+            xs = [p.x for p in points]; ys = [p.y for p in points]
+            detections.append(Detection(
+                bbox=BBox(x1=min(xs), y1=min(ys), x2=max(xs), y2=max(ys)),
+                category=keypoint_category, keypoints=points))
 
         if width is None or height is None:
             # Nothing verified for this image; can't recover dims. Skip, don't guess.

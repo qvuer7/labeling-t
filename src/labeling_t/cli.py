@@ -179,7 +179,8 @@ def _cmd_from_ls(a: argparse.Namespace) -> int:
     from .adapters.label_studio import from_label_studio
 
     export = json.loads(Path(a.export).read_text())
-    labels = from_label_studio(export, result_source=a.source)
+    labels = from_label_studio(export, result_source=a.source,
+                               keypoint_category=a.keypoint_category)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     for img in labels:
@@ -222,6 +223,7 @@ def _cmd_from_ls_cloud(a: argparse.Namespace) -> int:  # pragma: no cover - need
             a.dataset, a.group, url=a.url, api_key=a.api_key,
             project_id=a.project_id, base=a.base, name=a.name,
             include_accepted=a.include_accepted, accepted_from=a.accepted_from,
+            keypoint_category=a.keypoint_category,
             on_progress=progress_reporter(a, "from-ls-cloud"),
         )
     except ValueError as exc:
@@ -796,6 +798,9 @@ def build_parser() -> argparse.ArgumentParser:
     fc.add_argument("--accepted-from", default="",
                     help="set selector the LS project's predictions were imported from "
                          "(e.g. labels-yolo-sam2) — the copy source for accepted tasks")
+    fc.add_argument("--keypoint-category", default="keypoints",
+                    help="category for the Detection that collects a task's keypoint regions "
+                         "(LS points are flat, so they collapse into one Detection per image)")
     fc.add_argument("--base", default=None, help="storage root (default s3://$S3_BUCKET)")
     fc.set_defaults(func=_cmd_from_ls_cloud)
 
@@ -827,6 +832,8 @@ def build_parser() -> argparse.ArgumentParser:
     frm.add_argument("--export", required=True)
     frm.add_argument("--out", required=True)
     frm.add_argument("--source", default="annotations", choices=["annotations", "predictions"])
+    frm.add_argument("--keypoint-category", default="keypoints",
+                    help="category for the Detection that collects a task's keypoint regions")
     frm.set_defaults(func=_cmd_from_ls)
 
     def _set_args(sp):

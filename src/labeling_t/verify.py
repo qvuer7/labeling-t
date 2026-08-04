@@ -58,6 +58,7 @@ def pull_verified(
     name: str = "",
     include_accepted: bool = False,
     accepted_from: str = "",
+    keypoint_category: str = "keypoints",
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict:
     """Export verified annotations from LS and write them to `verified[-name]/<group>/`.
@@ -85,7 +86,8 @@ def pull_verified(
     storage = open_storage(verified_prefix)
 
     export = fetch_ls_export(url, api_key, project_id, all_tasks=include_accepted)
-    labels = from_label_studio(export, result_source="annotations")
+    labels = from_label_studio(export, result_source="annotations",
+                               keypoint_category=keypoint_category)
     corrected_stems = {Path(img.image_path.split("?")[0]).stem for img in labels}
     accepted_stems: list[str] = []
     if include_accepted:
