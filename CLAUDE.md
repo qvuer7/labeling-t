@@ -94,7 +94,11 @@ deleted — 689 clips labeled locally 2026-07-14 across 6 batches: 386 make / 26
 
 ## Label Studio
 Hosted at `LS_URL` (`.env`), token `LS_API_KEY`. Login `admin@labeling-t.local` / droplet password.
-Relevant projects: **37 = "golden eval 140 — seg correct (brush)"** (140 VAL-game frames from
+Relevant projects: **38 = "ipbl-seg 1488 review (brush) 2026-08-05"** (fresh re-import of the
+flat `ipbl-basketball-seg/labels` set for dataset review — supersedes project 16, whose
+presigned URLs died; frames presign from each label's image_path → ipbl-basketball-1k/frames/all;
+pull back: `from-ls-cloud --dataset ipbl-basketball-seg --group "" --project-id 38 --name <ns>`) ·
+**37 = "golden eval 140 — seg correct (brush)"** (140 VAL-game frames from
 `datasets/ipbl-basketball-seg/golden-eval-candidates/` [ipbl agent; DISJOINT from farfem
 train sets, NEVER train on this]; preannot YOLO-seg converted to
 `labels-golden-preannot/golden-eval/`, frames in `frames/golden-eval/`; created 2026-08-04;
