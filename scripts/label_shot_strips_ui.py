@@ -63,7 +63,8 @@ class Store:
         with self.lock:
             return {"rows": [
                 {"i": i, "id": r.get("id", ""), "cls": r.get("cls", ""),
-                 "label_now": r.get("label_now", ""), "strip": r.get("strip", ""),
+                 "label_now": r.get("label_now", ""), "score": r.get("model_score", ""),
+                 "strip": r.get("strip", ""),
                  "made": (r.get(MADE_COL) or "").strip(),
                  "notes": (r.get(NOTES_COL) or "").strip(),
                  "info": (info_dir / f"{r.get('id', '')}.jpg").exists()}
@@ -146,6 +147,7 @@ function render() {
   $('meta').textContent =
     `${cur + 1}/${view.length}${bucket ? ' [' + bucket + ']' : ''} — ${r.id}` +
     ` — bucket ${r.cls} — label_now ${r.label_now}` +
+    (r.score ? ` — score ${r.score}` : '') +
     (r.made ? ` — labeled: ${r.made}` : '');
   if (document.activeElement !== $('notes')) $('notes').value = r.notes || '';
   const done = rows.filter(x => x.made).length;
