@@ -17,6 +17,13 @@ services:
       LABEL_STUDIO_PASSWORD: labeling-t-admin
       LABEL_STUDIO_USER_TOKEN: "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
       LABEL_STUDIO_LEGACY_API_TOKEN_ENABLED: "true"
+      # GOTCHA (LS >= ~1.17 / :latest): the flag above no longer flips the
+      # per-organization DB setting, so the fixed token 401s with "legacy token
+      # authentication has been disabled". One-time fix after first boot:
+      #   docker exec labeling-t-ls bash -c "cd /label-studio/label_studio && \
+      #     python3 manage.py shell -c 'from organizations.models import Organization
+      #   [setattr(o.jwt, \"legacy_api_tokens_enabled\", True) or o.jwt.save()
+      #    for o in Organization.objects.all()]'"
     volumes:
       - ls-data:/label-studio/data           # LS database/state
 

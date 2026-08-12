@@ -30,6 +30,11 @@
 ## Label Studio
 
 - Project titles max **50 chars** (hosted LS 400s opaquely above that).
+- Local docker-compose LS on `:latest` (>= ~1.17): the fixed dev token 401s
+  with "legacy token authentication has been disabled" — the env flag no
+  longer flips the per-org DB setting. One-time fix (also commented in
+  docker-compose.yml): `docker exec` a `manage.py shell` that sets
+  `org.jwt.legacy_api_tokens_enabled = True` for every Organization.
 - Presigned frame URLs expire in ~7 days — if images stop loading in LS,
   re-run `import-ls-cloud` (same project title makes a NEW project; pull the
   old one first).
