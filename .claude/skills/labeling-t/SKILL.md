@@ -28,8 +28,14 @@ Python deps: after a fresh clone run
 `uv sync --extra integrations --extra cloud --extra web` once — bare `uv run`
 only syncs base deps, and LS import / S3 / render stages need the extras.
 NEVER install the `models` extra locally (GPU-server torch stack; pod-only).
-Secrets: `.env` at the repo root (`cp .env.example .env` and ask the user for
-values) — the framework never writes it. RunPod auth = `RUNPOD_API_KEY` there.
+Secrets: `.env` at the repo root — the framework never writes it, and you
+never invent or log values. Two setup modes; ASK the user which they want:
+1. **File**: they point you at an existing complete env file
+   (e.g. `~/labeling-t.env`) → copy it to `.env` verbatim.
+2. **On demand**: `cp .env.example .env`, then request each value only when a
+   stage actually needs it (user pastes it, or edits `.env` themselves and
+   says done). Write only values the user explicitly provided.
+RunPod auth = `RUNPOD_API_KEY` (empty is fine if `runpodctl` has a stored login).
 
 ## Session start (always)
 

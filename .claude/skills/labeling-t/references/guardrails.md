@@ -25,7 +25,10 @@
   (`.labeling-t/pods.json`) > `{PREFIX}_ENDPOINT` env (deprecated) > the
   spec's SaaS default. Connection refused on a recorded pod ⇒ run
   `status --json` (reconciles state), then decide.
-- Never write `.env`. It holds secrets only.
+- `.env` is secrets-only: never write config/endpoints into it and never
+  invent or log secret values. During first-time setup you may fill it ONLY
+  from material the user explicitly provided (a source env file to copy, or
+  values they paste when a stage needs them).
 
 ## Label Studio
 
