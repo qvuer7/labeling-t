@@ -24,8 +24,10 @@ runpodctl --version || {   # needed ONLY for GPU provisioning (up/down/status/da
 export PATH="$HOME/.local/bin:$PATH"   # if either was just installed
 ```
 
-Python deps are NOT a separate step: `uv run` auto-syncs the venv from
-`uv.lock` (first run after a fresh clone installs for a minute).
+Python deps: after a fresh clone run
+`uv sync --extra integrations --extra cloud --extra web` once — bare `uv run`
+only syncs base deps, and LS import / S3 / render stages need the extras.
+NEVER install the `models` extra locally (GPU-server torch stack; pod-only).
 Secrets: `.env` at the repo root (`cp .env.example .env` and ask the user for
 values) — the framework never writes it. RunPod auth = `RUNPOD_API_KEY` there.
 

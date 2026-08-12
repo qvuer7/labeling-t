@@ -35,7 +35,7 @@ v0.x, working end-to-end on real basketball footage. **Boxes + masks, images onl
 - **Verification:** Label Studio, auto-generated config + pre-annotations (boxes, polygon or brush
   masks), round-trip back to the schema.
 - **Cloud:** S3 / DigitalOcean Spaces, presigned URLs, full cloud loop (`prelabel-cloud` → `import-ls-cloud` → `from-ls-cloud`).
-- **157 tests passing.**
+- **270 tests passing.**
 
 ## Install
 
@@ -48,14 +48,14 @@ ships in the repo (`CLAUDE.md`, the Claude Code skill in `.claude/skills/`,
 curl -LsSf https://astral.sh/uv/install.sh | sh
 curl -fsSL https://github.com/runpod/runpodctl/releases/latest/download/runpodctl-linux-amd64      -o ~/.local/bin/runpodctl && chmod +x ~/.local/bin/runpodctl
 
-# 2. code + env (uv run auto-syncs the venv from uv.lock on first use)
+# 2. code + env
 git clone https://github.com/qvuer7/labeling-t.git && cd labeling-t
 cp .env.example .env        # then fill in the secrets
+uv sync --extra integrations --extra cloud --extra web   # everything except GPU-server deps
 uv run pytest -q            # verify
 ```
 
-Working in this checkout directly: `uv sync --extra integrations --extra cloud`
-once, or just prefix every command with `uv run`.
+(The `models` extra is the GPU model-server image only — never install it locally.)
 
 ## Commands
 
@@ -147,7 +147,7 @@ src/labeling_t/      the framework (src-layout, pip-installable)
   web/                 FastAPI app + static SPA (labeling-t-web)
 scripts/             spike.py · ls_setup.py · serve_vllm.sh
 runbooks/            worked end-to-end runbooks
-tests/               157 tests
+tests/               270 tests
 Dockerfile           the model-server image (the [models] extra; runs on the GPU pod)
 docker-compose.yml + nginx/   local Label Studio + CORS image server
 ```
