@@ -1,95 +1,94 @@
-# Runbook — fresh-clone demo: 20 frames → boxes → masks → Label Studio → verified
+# Runbook — agent-driven demo: fresh clone → Claude Code operates the whole lifecycle
 
-The live demo script: clone from GitHub on a "fresh" machine, install, run the
-full lifecycle on ~20 basketball frames with a hosted Label Studio. Rehearsed
-2026-08-12 (which is where the extras-install and LS-token fixes came from).
+The demo thesis: **the repo teaches the coding agent to operate it.** Skill,
+JSON output contract, guardrails, and checkpoint discipline all ship in the
+clone; only secrets travel out-of-band. The human types 4 shell commands and
+then only talks to the agent. Rehearsed 2026-08-12 (source of the
+extras-install and LS legacy-token fixes).
 
-## 0. Prep (before showtime)
+## 0. Prep (operator, before showtime)
 
-- **Label Studio droplet up** (`165.245.251.248`): power on in the DO console,
-  then `curl -s -o /dev/null -w "%{http_code}" https://165-245-251-248.nip.io`
-  → 200/302. Fallback: local `docker compose up -d` (see the legacy-token
-  gotcha commented in docker-compose.yml).
-- **RunPod**: no stray pods (`labeling-t-runpod status --json`), balance ≥ $5.
-- **Frames**: ~20 jpgs in a folder OUTSIDE the repo (e.g. `~/demo-frames`).
-- **Pre-warm both pods ~15 min before** (kills all boot dead-air; ~$0.88/hr):
+- Secrets file ready outside any repo: `~/labeling-t.env` (S3/DO Spaces creds,
+  `RUNPOD_API_KEY`, `LS_URL=https://165-245-251-248.nip.io`, `LS_API_KEY`,
+  optional `OPENAI_API_KEY` for the OCR kicker).
+- ~20 jpgs in `~/demo-frames` (outside the repo).
+- Label Studio droplet answering: `curl -s -o /dev/null -w "%{http_code}"
+  https://165-245-251-248.nip.io` → 302.
+- RunPod: no stray pods, balance ≥ $5.
+- Optional (kills boot dead-air, ~$0.88/hr): pre-warm both pods ~15 min before —
+  `up --model locate_anything --gpu a40 --hours 3 --budget 3` and the same for
+  `sam2`. The live agent then hits the duplicate-pod guardrail and reuses the
+  endpoints — narrate it as the feature it is.
+
+## 1. On screen — the only shell commands of the demo
 
 ```bash
-uv run labeling-t-runpod up --model locate_anything --gpu a40 --hours 3 --budget 3 --json
-uv run labeling-t-runpod up --model sam2            --gpu a40 --hours 3 --budget 3 --json
-```
-
-## 1. Fresh install (live, ~4 min)
-
-```bash
+mkdir ~/demo && cd ~/demo
 git clone https://github.com/qvuer7/labeling-t.git && cd labeling-t
-cp <your-saved>/.env .env       # secrets travel out-of-band; see table below
-uv sync --extra integrations --extra cloud --extra web
-uv run pytest -q                # → 270 passed
-claude                          # skill + CLAUDE.md auto-load from the repo
+claude          # accept the trust prompt; skill + CLAUDE.md auto-load from the clone
 ```
 
-`.env` keys required for this demo (values from the operator's saved copy):
+## 2. Prompts, in order
 
-| key | value |
-|---|---|
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | DO Spaces creds |
-| `S3_ENDPOINT_URL` / `S3_REGION` / `S3_BUCKET` | `https://fra1.digitaloceanspaces.com` / `fra1` / `ml-cv-data` |
-| `RUNPOD_API_KEY` | RunPod account key |
-| `LS_URL` | `https://165-245-251-248.nip.io` |
-| `LS_API_KEY` | the droplet LS token |
-| `OPENAI_API_KEY` (optional) | OCR kicker only |
+**Self-install:**
 
-## 2. The lifecycle (either tell Claude the goal and let the skill drive, or by hand)
+> Set yourself up to operate this repo on this machine: install any missing
+> binaries, sync dependencies, set up .env (my secrets are in ~/labeling-t.env —
+> copy that file), and verify the installation is green.
 
-Agent one-liner: *"Ingest ~/demo-frames as dataset demo-live and get me verified
-player/ball/referee/scoreboard/hoop masks in Label Studio — sample first."*
+Expected agent behavior (all from the skill): check/self-install `uv` +
+`runpodctl`; `uv sync --extra integrations --extra cloud --extra web`;
+`cp ~/labeling-t.env .env` (it never writes secret values itself);
+`uv run pytest -q` → 270 passed; `labeling-t-runpod status --json`.
 
-By hand:
+**Optional opener — real scale, zero risk:**
 
-```bash
-uv run labeling-t-runpod status --json          # pods ready + balance
-uv run labeling-t ingest-images --src ~/demo-frames --dataset demo-live --group all --json
+> Show me the current state of the ipbl-basketball-1k training set: stats on
+> labels-combined and render 6 sample frames so we can look at the masks.
 
-# sample 5 stems first — checkpoint discipline
-uv run labeling-t prelabel-cloud --dataset demo-live --group all --model locate_anything \
-  --categories "basketball player,basketball,referee,scoreboard,basketball hoop" \
-  --category-map runbooks/ipbl-1k-locateanything/category_map.json \
-  --concurrency 1 --stems <s1,s2,s3,s4,s5> --json
-uv run labeling-t render --dataset demo-live --group all --set labels --out /tmp/r1 --json
-# LOOK at the PNGs, then the full run: same command minus --stems (~8 s/frame)
+**The pipeline:**
 
-uv run labeling-t stats    --dataset demo-live --group all --set labels --json
-uv run labeling-t validate --dataset demo-live --group all --set labels --json
+> Ingest ~/demo-frames as dataset demo-live and get me verified
+> player/ball/referee/scoreboard/hoop masks in Label Studio. locate_anything
+> for boxes, sam2 for masks, a40 GPUs, $3 total budget. Sample a few frames
+> first and show me the rendered result before the full run. Import with brush
+> masks and give me the project URL.
 
-uv run labeling-t segment-cloud --dataset demo-live --group all --concurrency 1 --json
-uv run labeling-t stats  --dataset demo-live --group all --set labels --json  # masks.coverage 1.0
-uv run labeling-t render --dataset demo-live --group all --set labels --sample 8 --out /tmp/r2 --json
-uv run labeling-t-runpod down --all --json      # stop billing the moment stages finish
+Expected: ingest → (reuse or rent pod) → prelabel `--stems` sample w/
+`--concurrency 1` + the runbook category phrases → render + LOOK → full run →
+stats/validate → sam2 segment → stats (masks.coverage 1.0) → render →
+import-ls-cloud (title ≤ 50 chars) → project URL.
 
-uv run labeling-t import-ls-cloud --dataset demo-live --group all --project "demo-live masks" \
-  --categories "player,ball,referee,scoreboard,hoop" --masks --mask-format brush --json
-# open result.project_url → fix a mask, submit a few, just VIEW the rest
+**Human-in-the-loop:** open the project URL, fix one mask, submit 2–3 tasks,
+just *view* a few more. Then:
 
-uv run labeling-t from-ls-cloud --dataset demo-live --group all --project-id <ID> \
-  --name demo --include-accepted --accepted-from labels --json
-uv run labeling-t diff --dataset demo-live --group all --a labels --b verified-demo --json
-# result.changed = human fixes · result.byte_identical = accepted as-is
+> I've verified some tasks — pull everything back including accepted-as-viewed,
+> show me the diff against the model's labels, then shut all pods down and
+> confirm nothing is billing.
 
-uv run labeling-t-runpod status --json          # confirm pods: []
-```
+Expected: `from-ls-cloud --include-accepted --accepted-from labels` →
+`diff` (changed = human fixes, byte_identical = accepted) → `down --all` →
+`status` shows `pods: []`.
 
-Optional OCR kicker (no GPU, ~cents):
+**OCR kicker (no GPU, ~cents):**
 
-```bash
-uv run labeling-t transcribe-cloud --dataset demo-live --group all \
-  --categories scoreboard --model openai_ocr \
-  --prompt 'Return ONLY JSON: {{"home": <int>, "away": <int>, "timer": "<clock>"}}' --json
-```
+> OCR the scoreboards in demo-live with openai_ocr — home/away/timer into
+> Detection.text — and show me a couple of results.
 
-## Talking points woven through
+## 3. Fallbacks
+
+- GPU stock dry → agent falls back per guardrails (a40 → 3090-COMMUNITY), or
+  re-prompt with `gemini_vl` (hosted, boxes-only, zero GPU).
+- Hosted LS misbehaves → `docker compose up -d` = local LS on `:8080`
+  (legacy-token fix commented in docker-compose.yml); point `.env` at it.
+- Total worst case: the opener alone still demos schema, stats, and rendered
+  masks on 13k real detections.
+
+## Talking points
 
 - Neutral schema owns the data; models / LS / COCO are swappable adapters.
-- Guardrails: `--budget` hard cap, `--hours` backstop, duplicate-pod refusal
-  (run `up` twice to show it), `--json` envelope contract, sample-first + render.
-- `diff` after pull-back shows exactly what the human changed — provenance intact.
+- The agent interface is deliberate: `--json` envelopes with structured
+  recovery fields, `--budget`/`--hours` cost guardrails, duplicate-pod
+  refusal, sample-first + render checkpoints.
+- `diff` after pull-back shows exactly what the human changed — provenance
+  survives the round-trip.
