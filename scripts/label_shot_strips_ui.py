@@ -60,6 +60,7 @@ class Store:
 
     def state(self) -> dict:
         info_dir = self.csv_path.parent / INFO_DIR
+        clips_dir = self.csv_path.parent / "clips"
         with self.lock:
             return {"rows": [
                 {"i": i, "id": r.get("id", ""), "cls": r.get("cls", ""),
@@ -67,7 +68,8 @@ class Store:
                  "strip": r.get("strip", ""),
                  "made": (r.get(MADE_COL) or "").strip(),
                  "notes": (r.get(NOTES_COL) or "").strip(),
-                 "info": (info_dir / f"{r.get('id', '')}.jpg").exists()}
+                 "info": (info_dir / f"{r.get('id', '')}.jpg").exists(),
+                 "clip": (clips_dir / f"{r.get('id', '')}.mp4").exists()}
                 for i, r in enumerate(self.rows)
             ]}
 
@@ -111,6 +113,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Shot strip rev
   <div id="meta"></div>
   <div id="progress"></div>
   <img id="strip">
+  <video id="clip" style="width:52%;margin-top:10px;border-radius:6px;border:2px solid #357;display:none"
+         controls muted loop playsinline></video>
   <img id="info">
   <div id="controls">
     <button onclick="nav(-1)">&#8592; prev</button>
@@ -144,6 +148,10 @@ function render() {
   const inf = $('info');
   inf.style.display = r.info ? 'block' : 'none';
   if (r.info) inf.src = `/img/${encodeURIComponent('info_hard_positives/' + r.id + '.jpg')}`;
+  const clip = $('clip');
+  clip.style.display = r.clip ? 'block' : 'none';
+  if (r.clip) { clip.src = `/img/${encodeURIComponent('clips/' + r.id + '.mp4')}`; clip.play().catch(() => {}); }
+  else { clip.pause(); clip.removeAttribute('src'); }
   $('meta').textContent =
     `${cur + 1}/${view.length}${bucket ? ' [' + bucket + ']' : ''} — ${r.id}` +
     ` — bucket ${r.cls} — label_now ${r.label_now}` +
@@ -222,7 +230,8 @@ def make_handler(store: Store, base_dir: Path):
                 if not target.is_relative_to(base_dir.resolve()) or not target.exists():
                     self.send_error(404)
                     return
-                self._send(target.read_bytes(), "image/jpeg")
+                ctype = "video/mp4" if target.suffix == ".mp4" else "image/jpeg"
+                self._send(target.read_bytes(), ctype)
             else:
                 self.send_error(404)
 
